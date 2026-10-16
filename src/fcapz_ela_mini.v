@@ -37,6 +37,11 @@ module fcapz_ela_mini (
 
     // fpgacapZero 0.4 register map, core id "LA"
     localparam [31:0] VERSION = 32'h0004_4C41;
+    // Constant ID words, equal to rtl/fcapz_ela.v at these parameters:
+    // FEATURES = {TIMESTAMP_W 0, NUM_SEGMENTS 1, NUM_CHANNELS 1,
+    //             HAS_EXT_TRIG, TRIG_STAGES 1}
+    localparam [31:0] FEATURES     = 32'h0001_0141;
+    localparam [31:0] COMPARE_CAPS = 32'h000A_01C3;
 
     localparam [7:0] ADDR_VERSION     = 8'h00;
     localparam [7:0] ADDR_CTRL        = 8'h04;
@@ -53,7 +58,10 @@ module fcapz_ela_mini (
     localparam [7:0] ADDR_NUM_CHAN    = 8'hA4;
     localparam [7:0] ADDR_TRIG_EXT    = 8'hB4;
     localparam [7:0] ADDR_NUM_SEGMENTS = 8'hB8;
+    localparam [7:0] ADDR_SEG_STATUS  = 8'hBC;
+    localparam [7:0] ADDR_SEG_START   = 8'hC8;
     localparam [7:0] ADDR_STARTUP_ARM = 8'hD8;
+    localparam [7:0] ADDR_COMPARE_CAPS = 8'hE0;
     // DATA window: 0x0100 + 4*i, i = 0..15
 
     // ---------------- configuration ----------------
@@ -168,10 +176,13 @@ module fcapz_ela_mini (
                     ADDR_TRIG_MODE:    reg_rdata[1:0] = trig_mode;
                     ADDR_TRIG_VALUE:   reg_rdata[3:0] = trig_value;
                     ADDR_TRIG_MASK:    reg_rdata[3:0] = trig_mask;
-                    ADDR_FEATURES:     reg_rdata[3:0] = 4'd1;   // TRIG_STAGES = 1
+                    ADDR_FEATURES:     reg_rdata = FEATURES;
                     ADDR_NUM_CHAN:     reg_rdata[0]   = 1'b1;
                     ADDR_TRIG_EXT:     reg_rdata[1:0] = trig_ext;
                     ADDR_NUM_SEGMENTS: reg_rdata[0]   = 1'b1;
+                    ADDR_SEG_STATUS:   reg_rdata[31]  = 1'b1;     // no segments
+                    ADDR_SEG_START:    reg_rdata[3:0] = start_ptr;
+                    ADDR_COMPARE_CAPS: reg_rdata = COMPARE_CAPS;
                     ADDR_STARTUP_ARM:  reg_rdata[0]   = startup_arm;
                     default: ;
                 endcase

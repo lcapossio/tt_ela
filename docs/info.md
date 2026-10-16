@@ -9,7 +9,7 @@ You can also include images in this folder and reference them in the markdown. E
 
 ## How it works
 
-This is a compact, single-tile version of the embedded logic analyzer (ELA) from [fpgacapZero](https://github.com/lcapossio/fpgacapZero), with a 4-bit probe and a 16-sample capture buffer. The full upstream core does not fit in one tile, so the analyzer is a small reimplementation (`src/fcapz_ela_mini.v`) of a subset of the fpgacapZero 0.4 ELA register map, with the same capture behavior.
+This is a compact, single-tile version of the embedded logic analyzer (ELA) from [fpgacapZero](https://github.com/lcapossio/fpgacapZero), with a 4-bit probe and a 16-sample capture buffer. The full upstream core does not fit in one tile, so the analyzer is a small reimplementation (`src/fcapz_ela_mini.v`) of a subset of the fpgacapZero 0.4 ELA register map, with the same capture behavior. Its ID registers (VERSION, FEATURES, COMPARE_CAPS) read the same as the full core built with this configuration, so fpgacapZero host code sees the same capabilities.
 
 It samples `ui_in[3:0]` on every clock into a ring buffer. A trigger can fire on a value match (masked compare) or on any change of the masked bits, optionally combined (OR or AND) with the external `TRIG_IN` pin. The buffer keeps a configurable number of samples from before the trigger, then fills the rest after it.
 
@@ -37,7 +37,7 @@ Registers are 32 bits on the bus but store only the bits a 4-bit probe needs: a 
 
 | Address | Name | Notes |
 |---------|------|-------|
-| 0x0000 | VERSION | 0x00044C41: core id 0x4C41 ("LA"), register map version 0.4 |
+| 0x0000 | VERSION | 0x00044C41: `[15:0]` core id 0x4C41 ("LA"), `[31:16]` fpgacapZero version 0.4 |
 | 0x0004 | CTRL | write only: bit 0 = arm, bit 1 = reset capture (re-arms if STARTUP_ARM is set) |
 | 0x0008 | STATUS | bit 0 armed, bit 1 triggered, bit 2 done (bit 3 overflow is always 0) |
 | 0x000C / 0x0010 | SAMPLE_W / DEPTH | read 4 and 16 |
@@ -46,8 +46,10 @@ Registers are 32 bits on the bus but store only the bits a 4-bit probe needs: a 
 | 0x0020 | TRIG_MODE | bit 1 = change detect, otherwise value match (default 1) |
 | 0x0024 / 0x0028 | TRIG_VALUE / TRIG_MASK | compare value and mask |
 | 0x002C | BURST_PTR | accepted for compatibility, no effect: the capture start is latched automatically |
-| 0x003C | FEATURES | reads 1 (one trigger stage) |
+| 0x003C | FEATURES | 0x00010141: one trigger stage, external trigger, one channel, one segment |
 | 0x00A4 / 0x00B8 | NUM_CHAN / NUM_SEGMENTS | read 1 |
+| 0x00BC / 0x00C8 | SEG_STATUS / SEG_START | 0x80000000 / buffer index of the capture start |
+| 0x00E0 | COMPARE_CAPS | 0x000A01C3, same as the full core |
 | 0x00B4 | TRIG_EXT | bits `[1:0]`, `TRIG_IN` use: 0 = ignored (default), 1 = OR with internal trigger, 2 = AND |
 | 0x00D8 | STARTUP_ARM | bit 0: arm automatically after reset and after a CTRL reset |
 | 0x0100 + 4*i | DATA | sample i of the capture, oldest first. Reads 0 until done, and for i >= CAPTURE_LEN |

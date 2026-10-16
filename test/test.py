@@ -255,3 +255,22 @@ async def test_ext_trigger(dut):
     assert pulses == 1
     samples = await read_capture(dut, host, pretrig + posttrig + 1)
     assert all(s == 0x3 for s in samples)
+
+
+@cocotb.test()
+async def test_id_registers(dut):
+    # Constant words a host uses to discover the core's capabilities.
+    host = await reset(dut)
+    expected = {
+        ADDR_VERSION: 0x00044C41,
+        0x003C: 0x00010141,  # FEATURES: 1 stage, ext trigger, 1 chan, 1 seg
+        0x00A4: 1,           # NUM_CHAN
+        0x00B8: 1,           # NUM_SEGMENTS
+        0x00BC: 0x80000000,  # SEG_STATUS without segments
+        0x00C4: 0,           # TIMESTAMP_W
+        0x00D0: 0,           # PROBE_MUX_W
+        0x00E0: 0x000A01C3,  # COMPARE_CAPS
+    }
+    for addr, value in expected.items():
+        got = await host.read(addr)
+        assert got == value, f"0x{addr:04x}: 0x{got:08x} != 0x{value:08x}"
