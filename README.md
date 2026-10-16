@@ -8,12 +8,12 @@ The [fpgacapZero](https://github.com/lcapossio/fpgacapZero) embedded logic analy
 
 ## Layout
 
-- `src/tt_um_fcapz_ela_tile.v`: Tiny Tapeout top level and SPI-to-register bridge.
-- `src/fcapz_ela.v`, `src/trig_compare.v`, `src/dpram.v`, `src/fcapz_version.vh`: ELA core, unmodified copies of `upstream/rtl`.
-- `upstream/`: fpgacapZero as a git submodule, pinned to the commit `src/` was copied from. The build only uses `src/`.
-- `test/`: cocotb testbench (register access and a full capture with readback). See [test/README.md](test/README.md).
+This branch (`onetile`) is the 1x1 version. The full upstream core needs a 2x2 tile, and that version is on `main`.
 
-To update the core, move the `upstream/` submodule to the new commit and copy those four files from `upstream/rtl` into `src/`.
+- `src/tt_um_fcapz_ela_tile.v`: Tiny Tapeout top level and SPI-to-register bridge.
+- `src/fcapz_ela_mini.v`: compact reimplementation of the ELA for one tile. It follows a subset of the fpgacapZero 0.4 register map with the same capture behavior. See [docs/info.md](docs/info.md) for what is left out.
+- `upstream/`: fpgacapZero as a git submodule, for reference. The build only uses `src/`.
+- `test/`: cocotb testbench (registers, value, change and external triggers, startup arm). The same tests pass on the full core on `main`. See [test/README.md](test/README.md).
 
 ## What is Tiny Tapeout?
 

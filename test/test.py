@@ -26,11 +26,14 @@ ADDR_TRIG_MODE = 0x0020
 ADDR_TRIG_VALUE = 0x0024
 ADDR_TRIG_MASK = 0x0028
 ADDR_BURST_PTR = 0x002C
+ADDR_TRIG_EXT = 0x00B4
 ADDR_STARTUP_ARM = 0x00D8
 ADDR_DATA_BASE = 0x0100
 
 CTRL_ARM = 0x1
 CTRL_RESET = 0x2
+STATUS_ARMED = 0x1
+STATUS_TRIGGERED = 0x2
 STATUS_DONE = 0x4
 
 
@@ -113,6 +116,16 @@ async def test_registers(dut):
     await host.write(ADDR_STARTUP_ARM, 1)
     assert await host.read(ADDR_STARTUP_ARM) == 1
 
+    # Writes keep the low bits of a 32-bit word (MSB-first frame)
+    await host.write(ADDR_TRIG_MASK, 0xFFFFFFFF)
+    assert await host.read(ADDR_TRIG_MASK) & 0xF == 0xF
+    await host.write(ADDR_TRIG_VALUE, 0xFFFFFFF5)
+    assert await host.read(ADDR_TRIG_VALUE) & 0xF == 0x5
+    await host.write(ADDR_PRETRIG, 3)
+    await host.write(ADDR_POSTTRIG, 9)
+    assert await host.read(ADDR_PRETRIG) == 3
+    assert await host.read(ADDR_POSTTRIG) == 9
+
     # Probe mirror and busy idle
     dut.ui_in.value = 0x5
     await ClockCycles(dut.clk, 2)
@@ -130,35 +143,115 @@ async def drive_ramp(dut):
         count = (count + 1) & 0xF
 
 
+async def configure(host, pretrig, posttrig, mode, value, mask, ext=0):
+    await host.write(ADDR_CTRL, CTRL_RESET)
+    await host.write(ADDR_PRETRIG, pretrig)
+    await host.write(ADDR_POSTTRIG, posttrig)
+    await host.write(ADDR_TRIG_MODE, mode)
+    await host.write(ADDR_TRIG_VALUE, value)
+    await host.write(ADDR_TRIG_MASK, mask)
+    await host.write(ADDR_TRIG_EXT, ext)
+
+
+async def wait_done(host, polls=20):
+    for _ in range(polls):
+        status = await host.read(ADDR_STATUS)
+        if status & STATUS_DONE:
+            return status
+    assert False, f"capture never completed, STATUS=0x{status:x}"
+
+
+async def read_capture(dut, host, expected_len):
+    cap_len = await host.read(ADDR_CAPTURE_LEN)
+    assert cap_len == expected_len
+    await host.write(ADDR_BURST_PTR, 0)  # latch start pointer of the capture
+    samples = [await host.read(ADDR_DATA_BASE + 4 * i) for i in range(cap_len)]
+    dut._log.info("samples: " + " ".join(f"{s:x}" for s in samples))
+    return samples
+
+
+def assert_contiguous(samples):
+    for i in range(1, len(samples)):
+        assert samples[i] == (samples[i - 1] + 1) & 0xF, f"gap at sample {i}"
+
+
 @cocotb.test()
 async def test_capture(dut):
     host = await reset(dut)
     pretrig, posttrig, trig_value = 4, 7, 0xA
 
-    await host.write(ADDR_CTRL, CTRL_RESET)
-    await host.write(ADDR_PRETRIG, pretrig)
-    await host.write(ADDR_POSTTRIG, posttrig)
-    await host.write(ADDR_TRIG_MODE, 0x1)  # value match
-    await host.write(ADDR_TRIG_VALUE, trig_value)
-    await host.write(ADDR_TRIG_MASK, 0xF)
+    await configure(host, pretrig, posttrig, 0x1, trig_value, 0xF)
     ramp = cocotb.start_soon(drive_ramp(dut))
     await host.write(ADDR_CTRL, CTRL_ARM)
-
-    for _ in range(20):
-        status = await host.read(ADDR_STATUS)
-        if status & STATUS_DONE:
-            break
-    else:
-        assert False, f"capture never completed, STATUS=0x{status:x}"
+    await wait_done(host)
     ramp.cancel()
 
-    cap_len = await host.read(ADDR_CAPTURE_LEN)
-    assert cap_len == pretrig + posttrig + 1
-
-    await host.write(ADDR_BURST_PTR, 0)  # latch start pointer of the capture
-    samples = [await host.read(ADDR_DATA_BASE + 4 * i) for i in range(cap_len)]
-    dut._log.info("samples: " + " ".join(f"{s:x}" for s in samples))
-
+    samples = await read_capture(dut, host, pretrig + posttrig + 1)
     assert samples[pretrig] == trig_value
-    for i in range(1, cap_len):
-        assert samples[i] == (samples[i - 1] + 1) & 0xF, f"gap at sample {i}"
+    assert_contiguous(samples)
+
+
+@cocotb.test()
+async def test_startup_arm(dut):
+    # Reset defaults: armed, PRETRIG = POSTTRIG = 0, value 0 under a full
+    # mask. With the probe held at 0 the first sample triggers.
+    host = await reset(dut)
+    status = await wait_done(host)
+    assert status & (STATUS_ARMED | STATUS_TRIGGERED | STATUS_DONE) == (
+        STATUS_TRIGGERED | STATUS_DONE)
+    assert await host.read(ADDR_CAPTURE_LEN) == 1
+
+
+@cocotb.test()
+async def test_change_trigger(dut):
+    host = await reset(dut)
+    pretrig, posttrig = 3, 4
+
+    await configure(host, pretrig, posttrig, 0x2, 0, 0x8)  # change on bit 3
+    ramp = cocotb.start_soon(drive_ramp(dut))
+    await host.write(ADDR_CTRL, CTRL_ARM)
+    await wait_done(host)
+    ramp.cancel()
+
+    samples = await read_capture(dut, host, pretrig + posttrig + 1)
+    assert (samples[pretrig] ^ samples[pretrig - 1]) & 0x8, "trigger sample did not change bit 3"
+    assert_contiguous(samples)
+
+
+@cocotb.test()
+async def test_ext_trigger(dut):
+    host = await reset(dut)
+    pretrig, posttrig = 2, 3
+
+    # The value compare never matches the constant probe, so only TRIG_IN
+    # (OR mode) can fire the trigger.
+    dut.ui_in.value = 0x3
+    await configure(host, pretrig, posttrig, 0x1, 0xC, 0xF, ext=1)
+
+    pulses = 0
+
+    async def count_trigger_out():
+        nonlocal pulses
+        prev = 0
+        while True:
+            await FallingEdge(dut.clk)
+            cur = (int(dut.uo_out.value) >> 7) & 1
+            pulses += cur & ~prev & 1
+            prev = cur
+
+    counter = cocotb.start_soon(count_trigger_out())
+    await host.write(ADDR_CTRL, CTRL_ARM)
+    await ClockCycles(dut.clk, 50)
+    status = await host.read(ADDR_STATUS)
+    assert status & STATUS_ARMED and not status & STATUS_DONE, f"STATUS=0x{status:x}"
+    assert pulses == 0
+
+    host._set(TRIG_IN, 1)
+    await ClockCycles(dut.clk, 4)
+    host._set(TRIG_IN, 0)
+    await wait_done(host)
+    counter.cancel()
+
+    assert pulses == 1
+    samples = await read_capture(dut, host, pretrig + posttrig + 1)
+    assert all(s == 0x3 for s in samples)

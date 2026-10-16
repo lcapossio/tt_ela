@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// Tiny Tapeout wrapper around the fpgacapZero ELA core (fcapz_ela).
-//
-// Instantiates upstream rtl/fcapz_ela.v (copied unmodified into src/) at a
-// small parameter set and bridges a SPI-style serial interface on uio[] to the
-// core's register bus. No vendor TAP, no BRAM; jtag_clk is tied to clk.
+// Tiny Tapeout 1x1 tile: compact fpgacapZero-compatible ELA (fcapz_ela_mini)
+// behind a SPI-style register interface on uio[].
 //
 // Pinout:
 //   ui_in [3:0] = probe_in[3:0]   (signals being captured)
@@ -11,7 +8,7 @@
 //   uo_out[3:0] = live mirror of probe_in[3:0]
 //   uo_out[4]   = armed
 //   uo_out[6:5] = unused (0)
-//   uo_out[7]   = trigger_out (from core)
+//   uo_out[7]   = trigger_out (one-clock pulse when the trigger fires)
 //   uio_in[0]   = SCLK  (host shift clock, synchronised into clk)
 //   uio_in[1]   = MOSI
 //   uio_in[2]   = CS_N  (frame, active low)
@@ -27,11 +24,9 @@
 //   bits 17..48: write data (write) or read data on MISO (read)
 // Bits beyond 48 are ignored until CS_N rises.
 //
-// Register map is the upstream ELA map. Captured samples are read from the
-// DATA window at 0x0100 + 4*i (i = 0 .. CAPTURE_LEN-1, oldest first) after a
-// write to BURST_PTR (0x002C) latches the start pointer of the finished capture.
-// The window is served here through the core's burst read port, so the core's
-// own USER1 data window is compiled out.
+// Register map: subset of the fpgacapZero 0.4 ELA map (see fcapz_ela_mini.v).
+// Captured samples are at 0x0100 + 4*i (i = 0 .. CAPTURE_LEN-1, oldest
+// first) once STATUS.done is set.
 
 `default_nettype none
 `timescale 1ns/1ps
@@ -47,18 +42,7 @@ module tt_um_fcapz_ela_tile (
     input  wire       rst_n
 );
 
-    localparam SAMPLE_W = 4;
-    localparam DEPTH    = 16;
-    localparam AW       = $clog2(DEPTH);
-
-    localparam [15:0] ADDR_DATA_BASE = 16'h0100;
-
     wire rst = ~rst_n;
-
-    // ---------------- probe + ext trigger ----------------
-    wire [SAMPLE_W-1:0] probe_in    = ui_in[3:0];
-    wire                trigger_in  = uio_in[3];   // synchronised inside core
-    wire                trigger_out_w;
 
     // ---------------- host bridge ----------------
     // SCLK, MOSI and CS_N are asynchronous to clk. All three go through
@@ -76,34 +60,37 @@ module tt_um_fcapz_ela_tile (
     wire mosi      = mosi_s[1];
     wire cs_n      = cs_s[1];
 
-    reg [5:0]  bitcnt;      // saturates at 49 (end of frame)
-    reg        rw;
-    reg [15:0] addr_sr;
-    reg [31:0] shift_sr;    // write data in, read data out
-    reg        wr_pulse, rd_pulse, rd_pulse_d;
-    reg        busy;
+    reg [5:0] bitcnt;      // saturates at 49 (end of frame)
+    reg       rw;
+    reg       addr_hi;     // any of address bits [15:9] set
+    reg [8:0] addr;
+    reg [3:0] wdata;       // last 4 data bits = write data [3:0] (MSB-first frame)
+    reg [7:0] rd_snap;     // read data [7:0], frozen for the frame
+    reg       wr_pulse, rd_pulse;
+    reg       busy;
 
-    wire [31:0]         core_rdata;
-    wire [SAMPLE_W-1:0] burst_rd_data;
-    wire                in_datawin = (addr_sr >= ADDR_DATA_BASE);
-    wire [31:0]         rd_word    = in_datawin
-                                   ? {{(32-SAMPLE_W){1'b0}}, burst_rd_data}
-                                   : core_rdata;
+    wire [31:0] core_rdata;
 
     always @(posedge clk) begin
-        wr_pulse   <= 1'b0;
-        rd_pulse   <= 1'b0;
-        rd_pulse_d <= rd_pulse;
+        wr_pulse <= 1'b0;
+        rd_pulse <= 1'b0;
 
         if (rst) begin
-            bitcnt <= 0; rw <= 0; addr_sr <= 0; shift_sr <= 0; busy <= 0;
+            bitcnt <= 0; rw <= 0; addr_hi <= 0; addr <= 0; wdata <= 0;
+            rd_snap <= 0; busy <= 0;
         end else if (cs_n) begin
             bitcnt <= 0;
             busy   <= 0;
         end else if (sclk_rise && bitcnt != 6'd49) begin
-            if (bitcnt == 0)         rw       <= mosi;
-            else if (bitcnt <= 16)   addr_sr  <= {addr_sr[14:0], mosi};
-            else                     shift_sr <= {shift_sr[30:0], mosi};
+            if (bitcnt == 0) begin
+                rw      <= mosi;
+                addr_hi <= 1'b0;   // the old address would shift into addr_hi
+                addr    <= 9'd0;
+            end else if (bitcnt <= 16) begin
+                {addr_hi, addr} <= {addr_hi | addr[8], addr[7:0], mosi};
+            end else begin
+                wdata <= {wdata[2:0], mosi};
+            end
             bitcnt <= bitcnt + 1'b1;
 
             if (rw && bitcnt == 48)  wr_pulse <= 1'b1;
@@ -111,70 +98,41 @@ module tt_um_fcapz_ela_tile (
             busy <= 1'b1;
         end
 
-        // jtag_rdata and the burst read data are registered in the core, so
-        // they are valid one cycle after rd_pulse.
-        if (rd_pulse_d) shift_sr <= rd_word;
+        // The address is complete when rd_pulse is high; the core's read
+        // mux is combinational. Bits [31:8] depend only on the address.
+        if (rd_pulse) rd_snap <= core_rdata[7:0];
     end
-    wire miso = shift_sr[31];
+
+    // Bit 31 is presented after the bit-16 edge, bit 0 after the bit-47 edge.
+    wire       data_phase = !cs_n && bitcnt >= 6'd17 && bitcnt <= 6'd48;
+    wire [4:0] rd_idx     = 5'd16 - bitcnt[4:0];   // 48 - bitcnt, mod 32
+    wire       miso       = data_phase && (rd_idx[4:3] != 2'b00 ? core_rdata[rd_idx]
+                                                                : rd_snap[rd_idx[2:0]]);
 
     // ---------------- ELA core ----------------
-    // DATA window sample i lives at ring address start_ptr + i (mod DEPTH);
-    // ADDR_DATA_BASE is DEPTH*4-aligned, so addr_sr[AW+1:2] is i mod DEPTH.
-    wire [AW-1:0]       burst_start_ptr;
-    wire [AW-1:0]       burst_rd_addr = burst_start_ptr + addr_sr[AW+1:2];
-    wire [0:0]          burst_rd_ts_data;   // TIMESTAMP_W=0 -> width 1 stub
-    wire                burst_start;
-    wire                burst_timestamp;
-    wire                armed_w;
+    wire armed_w, trigger_out_w;
 
-    fcapz_ela #(
-        .SAMPLE_W      (SAMPLE_W),
-        .DEPTH         (DEPTH),
-        .TRIG_STAGES   (1),
-        .STOR_QUAL     (0),
-        .NUM_CHANNELS  (1),
-        .INPUT_PIPE    (0),
-        .DECIM_EN      (0),
-        .EXT_TRIG_EN   (1),
-        .TIMESTAMP_W   (0),
-        .NUM_SEGMENTS  (1),
-        .PROBE_MUX_W   (0),
-        .STARTUP_ARM   (1),   // auto-arm after reset (no host needed)
-        .DEFAULT_TRIG_EXT(0),
-        .REL_COMPARE   (0),   // ==/!= only
-        .DUAL_COMPARE  (0),   // single comparator A
-        .USER1_DATA_EN (0)    // DATA window served by the bridge via burst port
-    ) u_ela (
-        .sample_clk (clk),
-        .sample_rst (rst),
-        .probe_in   (probe_in),
-        .trigger_in (trigger_in),
-        .trigger_out(trigger_out_w),
-        .armed_out  (armed_w),
-        .jtag_clk   (clk),
-        .jtag_rst   (rst),
-        .jtag_wr_en (wr_pulse),
-        .jtag_rd_en (rd_pulse),
-        .jtag_addr  (addr_sr),
-        .jtag_wdata (shift_sr),
-        .jtag_rdata (core_rdata),
-        .burst_rd_active (in_datawin),
-        .burst_rd_addr   (burst_rd_addr),
-        .burst_rd_data   (burst_rd_data),
-        .burst_rd_ts_data(burst_rd_ts_data),
-        .burst_start     (burst_start),
-        .burst_timestamp (burst_timestamp),
-        .burst_start_ptr (burst_start_ptr)
+    fcapz_ela_mini u_ela (
+        .clk         (clk),
+        .rst         (rst),
+        .probe_in    (ui_in[3:0]),
+        .trigger_in  (uio_in[3]),       // synchronised inside core
+        .trigger_out (trigger_out_w),
+        .armed_out   (armed_w),
+        .reg_wr      (wr_pulse),
+        .reg_addr_hi (addr_hi),
+        .reg_addr    (addr),
+        .reg_wdata   (wdata),
+        .reg_rdata   (core_rdata)
     );
 
     // ---------------- pin mapping ----------------
-    assign uo_out  = { trigger_out_w, 2'b00, armed_w, probe_in };
+    assign uo_out  = { trigger_out_w, 2'b00, armed_w, ui_in[3:0] };
     assign uio_out = { 2'b00, busy, miso, 4'b0000 };
     assign uio_oe  = 8'b0011_0000;  // miso(4), busy(5) drive out; rest in
 
     // tie-offs to silence lint
-    wire _unused = &{ena, ui_in[7:4], uio_in[7:4], burst_rd_ts_data,
-                     burst_start, burst_timestamp, 1'b0};
+    wire _unused = &{ena, ui_in[7:4], uio_in[7:4], 1'b0};
 
 endmodule
 
