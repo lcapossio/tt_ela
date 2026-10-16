@@ -9,13 +9,11 @@ The [fpgacapZero](https://github.com/lcapossio/fpgacapZero) embedded logic analy
 ## Layout
 
 - `src/tt_um_fcapz_ela_tile.v`: Tiny Tapeout top level and SPI-to-register bridge.
-- `src/fcapz_ela.v`, `src/trig_compare.v`, `src/dpram.v`, `src/fcapz_version.vh`: ELA core, copied from `upstream/rtl`.
+- `src/fcapz_ela.v`, `src/trig_compare.v`, `src/dpram.v`, `src/fcapz_version.vh`: ELA core, unmodified copies of `upstream/rtl`.
 - `upstream/`: fpgacapZero as a git submodule, pinned to the commit `src/` was copied from. The build only uses `src/`.
 - `test/`: cocotb testbench (register access and a full capture with readback). See [test/README.md](test/README.md).
 
-### Local patch on the core
-
-`src/fcapz_ela.v` = upstream `44d1059` plus one fix that is not upstream yet: the "latch config on arm" block uses its own loop variable `li` instead of sharing `integer si` with the block above. Without it, LibreLane's synthesis check reports 32 "multiple conflicting drivers" errors and the GDS build stops. Keep this patch when re-copying from upstream until it is merged there, then bump the submodule and copy all four files again.
+To update the core, move the `upstream/` submodule to the new commit and copy those four files from `upstream/rtl` into `src/`.
 
 ## What is Tiny Tapeout?
 

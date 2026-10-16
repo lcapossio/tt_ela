@@ -1090,8 +1090,8 @@ module fcapz_ela #(
     end
 
     // ---- CDC: config registers ---------------------------------------------
-    integer si;
-    always @(posedge sample_clk or posedge sample_rst) begin
+    always @(posedge sample_clk or posedge sample_rst) begin : cdc_cfg
+        integer si;  // block-local: a shared one gets a driver per block
         if (sample_rst) begin
             pretrig_len_sync1  <= 0; pretrig_len_sync2  <= 0;
             posttrig_len_sync1 <= 0; posttrig_len_sync2 <= 0;
@@ -1217,8 +1217,8 @@ module fcapz_ela #(
     endgenerate
 
     // ---- Latch config on arm -----------------------------------------------
-    integer li;  // own loop variable: sharing si with the block above multi-drives it
-    always @(posedge sample_clk or posedge sample_rst) begin
+    always @(posedge sample_clk or posedge sample_rst) begin : latch_cfg
+        integer si;
         if (sample_rst) begin
             pretrig_len      <= 0;
             posttrig_len     <= 0;
@@ -1238,17 +1238,17 @@ module fcapz_ela #(
             decim_ratio      <= 24'h0;
             ext_trig_mode    <= DEFAULT_TRIG_EXT_MODE;
             trig_delay       <= 16'h0;
-            for (li = 0; li < TRIG_STAGES; li = li + 1) begin
-                seq_mode_a[li]       <= 4'd0;
-                seq_mode_b[li]       <= 4'd0;
-                seq_combine[li]      <= 2'd0;
-                seq_value_a[li]      <= {SAMPLE_W{1'b0}};
-                seq_mask_a[li]       <= {SAMPLE_W{1'b1}};
-                seq_value_b[li]      <= {SAMPLE_W{1'b0}};
-                seq_mask_b[li]       <= {SAMPLE_W{1'b1}};
-                seq_count_target[li] <= 16'h0;
-                seq_next_state[li]   <= {SEQ_STATE_W{1'b0}};
-                seq_is_final[li]     <= 1'b0;
+            for (si = 0; si < TRIG_STAGES; si = si + 1) begin
+                seq_mode_a[si]       <= 4'd0;
+                seq_mode_b[si]       <= 4'd0;
+                seq_combine[si]      <= 2'd0;
+                seq_value_a[si]      <= {SAMPLE_W{1'b0}};
+                seq_mask_a[si]       <= {SAMPLE_W{1'b1}};
+                seq_value_b[si]      <= {SAMPLE_W{1'b0}};
+                seq_mask_b[si]       <= {SAMPLE_W{1'b1}};
+                seq_count_target[si] <= 16'h0;
+                seq_next_state[si]   <= {SEQ_STATE_W{1'b0}};
+                seq_is_final[si]     <= 1'b0;
             end
         end else if (any_arm_pulse) begin
             pretrig_len      <= pretrig_len_sync2;
@@ -1285,23 +1285,23 @@ module fcapz_ela #(
             // Trigger delay (sample clocks) — latched on arm
             trig_delay       <= trig_delay_sync2;
             // Sequencer stages
-            for (li = 0; li < TRIG_STAGES; li = li + 1) begin
-                seq_mode_a[li]       <= HAS_SEQUENCER ? seq_cfg_sync2[li][3:0] : 4'd0;
-                seq_mode_b[li]       <= (HAS_SEQUENCER && HAS_DUAL_COMPARE)
-                                         ? seq_cfg_sync2[li][7:4] : 4'd0;
-                seq_combine[li]      <= (HAS_SEQUENCER && HAS_DUAL_COMPARE)
-                                         ? seq_cfg_sync2[li][9:8] : 2'd0;
-                seq_next_state[li]   <= HAS_SEQUENCER
-                                         ? seq_cfg_sync2[li][10 +: SEQ_STATE_W]
+            for (si = 0; si < TRIG_STAGES; si = si + 1) begin
+                seq_mode_a[si]       <= HAS_SEQUENCER ? seq_cfg_sync2[si][3:0] : 4'd0;
+                seq_mode_b[si]       <= (HAS_SEQUENCER && HAS_DUAL_COMPARE)
+                                         ? seq_cfg_sync2[si][7:4] : 4'd0;
+                seq_combine[si]      <= (HAS_SEQUENCER && HAS_DUAL_COMPARE)
+                                         ? seq_cfg_sync2[si][9:8] : 2'd0;
+                seq_next_state[si]   <= HAS_SEQUENCER
+                                         ? seq_cfg_sync2[si][10 +: SEQ_STATE_W]
                                          : {SEQ_STATE_W{1'b0}};
-                seq_is_final[li]     <= HAS_SEQUENCER ? seq_cfg_sync2[li][12] : 1'b0;
-                seq_count_target[li] <= HAS_SEQUENCER ? seq_cfg_sync2[li][31:16] : 16'h0;
-                seq_value_a[li]      <= HAS_SEQUENCER ? seq_value_a_sync2[li] : {SAMPLE_W{1'b0}};
-                seq_mask_a[li]       <= HAS_SEQUENCER ? seq_mask_a_sync2[li] : {SAMPLE_W{1'b1}};
-                seq_value_b[li]      <= (HAS_SEQUENCER && HAS_DUAL_COMPARE)
-                                         ? seq_value_b_sync2[li] : {SAMPLE_W{1'b0}};
-                seq_mask_b[li]       <= (HAS_SEQUENCER && HAS_DUAL_COMPARE)
-                                         ? seq_mask_b_sync2[li] : {SAMPLE_W{1'b1}};
+                seq_is_final[si]     <= HAS_SEQUENCER ? seq_cfg_sync2[si][12] : 1'b0;
+                seq_count_target[si] <= HAS_SEQUENCER ? seq_cfg_sync2[si][31:16] : 16'h0;
+                seq_value_a[si]      <= HAS_SEQUENCER ? seq_value_a_sync2[si] : {SAMPLE_W{1'b0}};
+                seq_mask_a[si]       <= HAS_SEQUENCER ? seq_mask_a_sync2[si] : {SAMPLE_W{1'b1}};
+                seq_value_b[si]      <= (HAS_SEQUENCER && HAS_DUAL_COMPARE)
+                                         ? seq_value_b_sync2[si] : {SAMPLE_W{1'b0}};
+                seq_mask_b[si]       <= (HAS_SEQUENCER && HAS_DUAL_COMPARE)
+                                         ? seq_mask_b_sync2[si] : {SAMPLE_W{1'b1}};
             end
         end
     end
