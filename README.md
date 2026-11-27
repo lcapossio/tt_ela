@@ -8,12 +8,12 @@ The [fpgacapZero](https://github.com/lcapossio/fpgacapZero) embedded logic analy
 
 ## Layout
 
-This branch (`onetile`) is the 1x1 version. The full upstream core needs a 2x2 tile, and that version is on `main`.
+This is the 1x1 version, which is the one submitted. The full upstream core needs a 2x2 tile. That version is kept at the `full-2x2` tag.
 
 - `src/tt_um_fcapz_ela_tile.v`: Tiny Tapeout top level and SPI-to-register bridge.
 - `src/fcapz_ela_mini.v`: compact reimplementation of the ELA for one tile. It follows a subset of the fpgacapZero 0.4 register map with the same capture behavior. See [docs/info.md](docs/info.md) for what is left out.
 - `upstream/`: fpgacapZero as a git submodule, for reference. The build only uses `src/`.
-- `test/`: cocotb testbench (registers, value, change and external triggers, startup arm). The same tests pass on the full core on `main`. See [test/README.md](test/README.md).
+- `test/`: cocotb testbench (registers, value, change and external triggers, startup arm). The same tests pass on the full core at the `full-2x2` tag. See [test/README.md](test/README.md).
 
 ## What is Tiny Tapeout?
 
