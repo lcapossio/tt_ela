@@ -364,16 +364,30 @@ def test_both_mode(ela):
     samples = ela.read_capture()
     _check(samples == [6, 6, 6], "mode 3 capture %s" % _hexlist(samples))
 
+    # A probe that never equals TRIG_VALUE: mode 3 fires on the change.
+    ela.set_probe(0x1)
+    ela.configure(1, 1, MODE_BOTH, 0xF, 0xF)
+    ela.write(CTRL, CTRL_ARM)
+    ela.tick(20)
+    status = ela.read(STATUS)
+    _check(status & 0x7 == ST_ARMED, "mode 3 STATUS=0x%x before the change" % status)
+    ela.set_probe(0x2)
+    ela.wait_done()
+    samples = ela.read_capture()
+    _check(samples == [1, 2, 2], "mode 3 change capture %s" % _hexlist(samples))
+
 
 def test_gen_offset(ela):
     # CAPTURE_GEN moves by exactly one per CTRL arm/reset write, and
     # DATA_OFFSET shifts DATA reads by whole samples.
     ela.reset()
     gen = ela.read(CAPTURE_GEN)
-    ela.write(CTRL, CTRL_ARM | CTRL_RESET)
-    ela.write(CTRL, 0)
-    got = ela.read(CAPTURE_GEN)
-    _check(got == (gen + 1) & 0xFFFF, "CAPTURE_GEN %d -> %d, expected +1" % (gen, got))
+    for ctrl, inc in ((CTRL_ARM, 1), (CTRL_RESET, 1), (CTRL_ARM | CTRL_RESET, 1), (0, 0)):
+        ela.write(CTRL, ctrl)
+        got = ela.read(CAPTURE_GEN)
+        _check(got == (gen + inc) & 0xFFFF,
+               "CTRL=%d: CAPTURE_GEN %d -> %d, expected +%d" % (ctrl, gen, got, inc))
+        gen = got
 
     ela.configure(4, 7, MODE_VALUE, 0xA, 0xF)
     ela.write(CTRL, CTRL_ARM)
@@ -381,6 +395,7 @@ def test_gen_offset(ela):
     ela.wait_done()
     samples = ela.read_capture()
     ela.write(DATA_OFFSET, 5)
+    _check(ela.read(DATA_OFFSET) == 5, "DATA_OFFSET readback")
     shifted = [ela.read(DATA + 4 * i) for i in range(8)]
     want = samples[5:] + [0] * (5 + 8 - len(samples))
     _check(shifted == want[:8], "offset 5: %s, expected %s"

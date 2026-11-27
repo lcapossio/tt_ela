@@ -10,6 +10,7 @@
 //   - CAPTURE_LEN = PRETRIG + POSTTRIG + 1 (keep it <= 16),
 //   - TRIG_MODE 3 = value match OR change, 2 = change, 0/1 = value match,
 //   - CTRL bit 1 (reset) re-arms when STARTUP_ARM is set,
+//   - a capture uses the settings written before its ARM (copied on ARM),
 //   - DATA_OFFSET (0xF4) adds a sample offset to DATA reads; CAPTURE_GEN
 //     (0xF8) counts CTRL arm/reset writes and reset releases.
 // Registers hold only the bits a 4-bit probe needs. Unlisted registers,
@@ -74,8 +75,13 @@ module fcapz_ela_mini (
     // DATA window: 0x0100 + 4*i, i = 0..15
 
     // ---------------- configuration ----------------
+    // Written (and read back) values. The capture uses copies taken at ARM
+    // (a_*), so, as in fpgacapZero 0.5, a capture runs with exactly the
+    // settings written before its ARM; later writes apply from the next ARM.
     reg [3:0] pretrig, posttrig, trig_value, trig_mask;
     reg [1:0] trig_mode, trig_ext;
+    reg [3:0] a_pretrig, a_posttrig, a_trig_value, a_trig_mask;
+    reg [1:0] a_trig_mode, a_trig_ext;
     reg       startup_arm;
 
     // ---------------- capture state ----------------
@@ -100,22 +106,22 @@ module fcapz_ela_mini (
     wire soft_reset = ctrl_wr && reg_wdata[1];
     wire arm        = ctrl_wr && (reg_wdata[0] || (reg_wdata[1] && startup_arm));
 
-    wire [3:0] m_probe = probe_r    & trig_mask;
-    wire [3:0] m_prev  = probe_prev & trig_mask;
-    wire [3:0] m_value = trig_value & trig_mask;
+    wire [3:0] m_probe = probe_r      & a_trig_mask;
+    wire [3:0] m_prev  = probe_prev   & a_trig_mask;
+    wire [3:0] m_value = a_trig_value & a_trig_mask;
     wire hit_eq  = m_probe == m_value;
     wire hit_chg = m_probe != m_prev;
-    wire hit_int = (trig_mode == 2'd3) ? (hit_eq | hit_chg)
-                 : trig_mode[1]        ? hit_chg : hit_eq;
+    wire hit_int = (a_trig_mode == 2'd3) ? (hit_eq | hit_chg)
+                 : a_trig_mode[1]        ? hit_chg : hit_eq;
     reg  hit;
     always @(*) begin
-        case (trig_ext)
+        case (a_trig_ext)
             2'd1:    hit = hit_int | trig_in_s[1];
             2'd2:    hit = hit_int & trig_in_s[1];
             default: hit = hit_int;
         endcase
     end
-    wire fire = armed && !triggered && pre_count >= pretrig && hit;
+    wire fire = armed && !triggered && pre_count >= a_pretrig && hit;
 
     always @(posedge clk) begin
         if (armed)
@@ -150,6 +156,8 @@ module fcapz_ela_mini (
         if (rst) begin
             pretrig <= 0; posttrig <= 0; trig_mode <= 2'd1;
             trig_value <= 0; trig_mask <= 4'hF; trig_ext <= 0;
+            a_pretrig <= 0; a_posttrig <= 0; a_trig_mode <= 2'd1;
+            a_trig_value <= 0; a_trig_mask <= 4'hF; a_trig_ext <= 0;
             startup_arm <= 1'b1;
             armed <= 1'b1; triggered <= 0; done <= 0;     // STARTUP_ARM=1
             wr_ptr <= 0; pre_count <= 0; post_left <= 0; start_ptr <= 0;
@@ -178,16 +186,23 @@ module fcapz_ela_mini (
             if (soft_reset || arm) begin
                 armed <= arm; triggered <= 0; done <= 0;
                 pre_count <= 0;
+                // A CTRL write never coincides with a configuration write
+                // (one write per frame), so this copies settled values.
+                if (arm) begin
+                    a_pretrig <= pretrig; a_posttrig <= posttrig;
+                    a_trig_mode <= trig_mode; a_trig_value <= trig_value;
+                    a_trig_mask <= trig_mask; a_trig_ext <= trig_ext;
+                end
             end else if (armed) begin
                 wr_ptr <= wr_ptr + 1'b1;
                 if (!triggered) begin
                     if (pre_count != 4'hF) pre_count <= pre_count + 1'b1;
                     if (fire) begin
                         triggered <= 1'b1;
-                        start_ptr <= wr_ptr - pretrig;
-                        cap_len   <= pretrig + posttrig + 5'd1;
-                        post_left <= posttrig;
-                        if (posttrig == 0) begin done <= 1'b1; armed <= 1'b0; end
+                        start_ptr <= wr_ptr - a_pretrig;
+                        cap_len   <= a_pretrig + a_posttrig + 5'd1;
+                        post_left <= a_posttrig;
+                        if (a_posttrig == 0) begin done <= 1'b1; armed <= 1'b0; end
                     end
                 end else begin
                     post_left <= post_left - 1'b1;
@@ -202,7 +217,8 @@ module fcapz_ela_mini (
     wire       data_addr = reg_addr[8] && reg_addr[7:6] == 2'b00 && reg_addr[1:0] == 2'b00;
     wire [5:0] data_sidx = {2'b00, data_idx} + {1'b0, data_offset};  // sample index
     wire [3:0] data_ptr  = start_ptr + data_sidx[3:0];
-    wire       data_ok   = done && data_sidx < {1'b0, cap_len};
+    // data_sidx < 16 too, so an offset of 16 reads 0 even if CAPTURE_LEN > 16
+    wire       data_ok   = done && data_sidx[5:4] == 2'b00 && data_sidx < {1'b0, cap_len};
 
     always @(*) begin
         reg_rdata = 32'h0;

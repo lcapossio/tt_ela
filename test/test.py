@@ -533,3 +533,59 @@ async def test_capture_gen(dut):
     dut.rst_n.value = 1
     await ClockCycles(dut.clk, 10)
     assert await host.read(ADDR_CAPTURE_GEN) == 1
+
+
+@cocotb.test()
+async def test_settings_at_arm(dut):
+    """A capture uses the settings written before its ARM (fpgacapZero 0.5)."""
+    host = await reset(dut)
+    await host.write(ADDR_STARTUP_ARM, 0)
+
+    # Armed for value 0xA on a steady 0x6: rewriting TRIG_VALUE to 6 (or the
+    # mode, mask, PRETRIG, POSTTRIG, TRIG_EXT) must not affect this capture.
+    dut.ui_in.value = 0x6
+    await configure(host, 1, 1, 0x1, 0xA, 0xF)
+    await host.write(ADDR_CTRL, CTRL_ARM)
+    await host.write(ADDR_TRIG_VALUE, 0x6)
+    await host.write(ADDR_TRIG_MODE, 0x2)
+    await host.write(ADDR_TRIG_MASK, 0x0)
+    await host.write(ADDR_TRIG_EXT, 0x1)
+    await host.write(ADDR_PRETRIG, 5)
+    await host.write(ADDR_POSTTRIG, 6)
+    host._set(TRIG_IN, 1)
+    await ClockCycles(dut.clk, 50)
+    host._set(TRIG_IN, 0)
+    status = await host.read(ADDR_STATUS)
+    assert status & 0x7 == STATUS_ARMED, f"STATUS=0x{status:x}"
+    assert await host.read(ADDR_TRIG_VALUE) == 0x6  # readback shows the write
+    dut.ui_in.value = 0xA
+    await wait_done(host)
+    samples = await read_capture(dut, host, 3)  # PRETRIG 1 + POSTTRIG 1 + 1
+    assert samples == [0x6, 0xA, 0xA], samples
+
+    # The next ARM takes the new settings: value 6 under mask 0 always
+    # matches, but mode 2 (change) with TRIG_EXT OR waits for TRIG_IN.
+    dut.ui_in.value = 0x6
+    await host.write(ADDR_CTRL, CTRL_ARM)
+    await ClockCycles(dut.clk, 50)
+    status = await host.read(ADDR_STATUS)
+    assert status & 0x7 == STATUS_ARMED, f"STATUS=0x{status:x}"
+    host._set(TRIG_IN, 1)
+    await ClockCycles(dut.clk, 4)
+    host._set(TRIG_IN, 0)
+    await wait_done(host)
+    await read_capture(dut, host, 12)  # PRETRIG 5 + POSTTRIG 6 + 1
+
+
+@cocotb.test()
+async def test_offset_past_buffer(dut):
+    """DATA_OFFSET 16 reads 0 even with an over-long CAPTURE_LEN."""
+    host = await reset(dut)
+    await configure(host, 15, 1, 0x1, 0xA, 0xF)  # CAPTURE_LEN 17, out of spec
+    ramp = cocotb.start_soon(drive_ramp(dut))
+    await host.write(ADDR_CTRL, CTRL_ARM)
+    await wait_done(host)
+    ramp.cancel()
+    assert await host.read(ADDR_CAPTURE_LEN) == 17
+    await host.write(ADDR_DATA_OFFSET, 16)
+    assert await host.read(ADDR_DATA_BASE) == 0

@@ -72,7 +72,7 @@ Clocks after bit 48 are ignored until `CS_N` rises. `BUSY` goes high at the firs
 
 ### Registers
 
-Registers are 32 bits on the bus but store only the bits a 4-bit probe needs: a write keeps data bits `[3:0]` (fewer where noted), and the unused bits read as 0. CTRL reads as 0. Addresses not listed here, including TRIG_DELAY and TRIG_HOLDOFF, read as 0 and ignore writes.
+Registers are 32 bits on the bus but store only the bits a 4-bit probe needs: a write keeps data bits `[3:0]` (fewer where noted; DATA_OFFSET also notes whether any higher bit is set), and the unused bits read as 0. CTRL reads as 0. Addresses not listed here, including TRIG_DELAY and TRIG_HOLDOFF, read as 0 and ignore writes.
 
 | Address | Name | Notes |
 |---------|------|-------|
@@ -91,15 +91,15 @@ Registers are 32 bits on the bus but store only the bits a 4-bit probe needs: a 
 | 0x00E0 | COMPARE_CAPS | 0x007A01C3, same as the full core: bit 20 DATA_OFFSET, bit 21 CAPTURE_GEN, bit 22 storage-qualifier encoding (no storage qualifier here). Only the TRIG_MODE modes can be selected |
 | 0x00B4 | TRIG_EXT | bits `[1:0]`, `TRIG_IN` use: 0 = ignored (default), 1 = OR with internal trigger, 2 = AND |
 | 0x00D8 | STARTUP_ARM | bit 0: arm automatically after reset and after a CTRL reset |
-| 0x00F4 | DATA_OFFSET | added to the sample index of every DATA read. Any value of 16 or more reads back as 16 and makes DATA read 0. Cleared by a CTRL write with bit 0 or 1 set |
-| 0x00F8 | CAPTURE_GEN | read only, `[15:0]`: counts CTRL writes with bit 0 or 1 set (one per write) and reset releases. Reads 1 after reset. A host can compare it before and after a readout |
+| 0x00F4 | DATA_OFFSET | added to the sample index of every DATA read. Any value of 16 or more (for example 0x10) reads back as 16 and makes DATA read 0. Cleared by a CTRL write with bit 0 or 1 set |
+| 0x00F8 | CAPTURE_GEN | read only, `[15:0]`: counts CTRL writes with bit 0 or 1 set (one per write) and reset releases. Reads 1 after reset: the chip has no power-up value to keep, so unlike the FPGA core it restarts at a chip reset. A host can compare it before and after a readout |
 | 0x0100 + 4*i | DATA | sample i + DATA_OFFSET of the capture, oldest first. Reads 0 until done, and past CAPTURE_LEN |
 
 ### Capturing
 
 1. Write STARTUP_ARM = 0, then CTRL = 0x2. The analyzer is now idle. (With STARTUP_ARM = 1, the CTRL reset re-arms it, and a half-written trigger could fire and pulse `TRIG_OUT` while you configure.)
 2. Set PRETRIG, POSTTRIG, TRIG_MODE, TRIG_VALUE, TRIG_MASK and TRIG_EXT (for example PRETRIG = 4, POSTTRIG = 7, TRIG_MODE = 1, TRIG_VALUE = 0xA, TRIG_MASK = 0xF).
-3. Write CTRL = 0x1 to arm, and drive the signals to capture on `ui_in[3:0]`. Change the configuration only while not armed.
+3. Write CTRL = 0x1 to arm, and drive the signals to capture on `ui_in[3:0]`. The capture uses the settings as they were at this write; settings written while armed apply from the next arm.
 4. Poll STATUS until bit 2 (done) is set.
 5. Read CAPTURE_LEN, then read DATA at 0x0100 + 4*i for i = 0 .. CAPTURE_LEN-1. The trigger sample is at index PRETRIG. Host code written for the full core can still write BURST_PTR first.
 
