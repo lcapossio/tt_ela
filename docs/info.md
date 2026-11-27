@@ -97,11 +97,11 @@ Registers are 32 bits on the bus but store only the bits a 4-bit probe needs: a 
 
 ### Capturing
 
-1. Write STARTUP_ARM = 0, then CTRL = 0x2. The analyzer is now idle. (With STARTUP_ARM = 1, the CTRL reset re-arms it, and a half-written trigger could fire and pulse `TRIG_OUT` while you configure.)
+1. Write STARTUP_ARM = 0, then CTRL = 0x2. The analyzer is now idle. (With STARTUP_ARM = 1, the CTRL reset re-arms it with the settings it already has, which could fire and pulse `TRIG_OUT` while you configure.)
 2. Set PRETRIG, POSTTRIG, TRIG_MODE, TRIG_VALUE, TRIG_MASK and TRIG_EXT (for example PRETRIG = 4, POSTTRIG = 7, TRIG_MODE = 1, TRIG_VALUE = 0xA, TRIG_MASK = 0xF).
 3. Write CTRL = 0x1 to arm, and drive the signals to capture on `ui_in[3:0]`. The capture uses the settings as they were at this write; settings written while armed apply from the next arm.
 4. Poll STATUS until bit 2 (done) is set.
-5. Read CAPTURE_LEN, then read DATA at 0x0100 + 4*i for i = 0 .. CAPTURE_LEN-1. The trigger sample is at index PRETRIG. Host code written for the full core can still write BURST_PTR first.
+5. Read CAPTURE_LEN, then read DATA at 0x0100 + 4*i for i = 0 .. CAPTURE_LEN-1. The trigger sample is at index PRETRIG (the value at the arm). Host code written for the full core can still write BURST_PTR first.
 
 ## External hardware
 

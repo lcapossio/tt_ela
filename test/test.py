@@ -552,16 +552,38 @@ async def test_settings_at_arm(dut):
     await host.write(ADDR_TRIG_EXT, 0x1)
     await host.write(ADDR_PRETRIG, 5)
     await host.write(ADDR_POSTTRIG, 6)
+    # TRIG_IN high and a 6 -> 7 step would fire the new settings (OR with
+    # TRIG_IN, change detect, value 6 under mask 0), never the armed ones.
     host._set(TRIG_IN, 1)
-    await ClockCycles(dut.clk, 50)
+    await ClockCycles(dut.clk, 20)
+    dut.ui_in.value = 0x7
+    await ClockCycles(dut.clk, 30)
     host._set(TRIG_IN, 0)
     status = await host.read(ADDR_STATUS)
     assert status & 0x7 == STATUS_ARMED, f"STATUS=0x{status:x}"
     assert await host.read(ADDR_TRIG_VALUE) == 0x6  # readback shows the write
+
+    # POSTTRIG 1 (armed) ends the capture one clock after TRIG_OUT, not six.
+    marks = {}
+
+    async def watch():
+        n = 0
+        while True:
+            await FallingEdge(dut.clk)
+            n += 1
+            out = int(dut.uo_out.value)
+            if out >> 7 & 1 and "trig" not in marks:
+                marks["trig"] = n
+            if not out >> 4 & 1 and "disarm" not in marks:
+                marks["disarm"] = n
+
+    watcher = cocotb.start_soon(watch())
     dut.ui_in.value = 0xA
     await wait_done(host)
+    watcher.cancel()
+    assert marks["disarm"] - marks["trig"] == 1, marks
     samples = await read_capture(dut, host, 3)  # PRETRIG 1 + POSTTRIG 1 + 1
-    assert samples == [0x6, 0xA, 0xA], samples
+    assert samples == [0x7, 0xA, 0xA], samples
 
     # The next ARM takes the new settings: value 6 under mask 0 always
     # matches, but mode 2 (change) with TRIG_EXT OR waits for TRIG_IN.
@@ -576,6 +598,21 @@ async def test_settings_at_arm(dut):
     await wait_done(host)
     await read_capture(dut, host, 12)  # PRETRIG 5 + POSTTRIG 6 + 1
 
+    # A CTRL reset that re-arms (STARTUP_ARM = 1) also takes the settings.
+    dut.ui_in.value = 0x6
+    await configure(host, 0, 0, 0x1, 0xA, 0xF)
+    await host.write(ADDR_CTRL, CTRL_ARM)
+    await host.write(ADDR_TRIG_VALUE, 0xB)
+    await host.write(ADDR_STARTUP_ARM, 1)
+    dut.ui_in.value = 0xB
+    await ClockCycles(dut.clk, 20)
+    status = await host.read(ADDR_STATUS)
+    assert status & 0x7 == STATUS_ARMED, f"STATUS=0x{status:x}"
+    await host.write(ADDR_CTRL, CTRL_RESET)
+    await wait_done(host)
+    samples = await read_capture(dut, host, 1)
+    assert samples == [0xB], samples
+
 
 @cocotb.test()
 async def test_offset_past_buffer(dut):
@@ -587,5 +624,9 @@ async def test_offset_past_buffer(dut):
     await wait_done(host)
     ramp.cancel()
     assert await host.read(ADDR_CAPTURE_LEN) == 17
+    # Offset 15: DATA[0] is sample 15 (the trigger), DATA[1] would be 16.
+    await host.write(ADDR_DATA_OFFSET, 15)
+    assert await host.read(ADDR_DATA_BASE) == 0xA
+    assert await host.read(ADDR_DATA_BASE + 4) == 0
     await host.write(ADDR_DATA_OFFSET, 16)
     assert await host.read(ADDR_DATA_BASE) == 0
