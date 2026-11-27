@@ -73,7 +73,11 @@ module fcapz_ela_mini (
     reg       armed, triggered, done;
     reg [3:0] wr_ptr, pre_count, post_left, start_ptr;
     reg [4:0] cap_len;
-    reg [3:0] probe_r, probe_prev;
+    // Input pipeline, no reset: probe_s/probe_r form a 2-FF synchroniser that
+    // matches trig_in_s, so TRIG_IN and the probe reach the trigger decision
+    // on the same clock. Without a reset they hold real pin samples taken
+    // while rst_n is low, so the startup capture never sees a fake value.
+    reg [3:0] probe_s, probe_r, probe_prev;
     reg [1:0] trig_in_s;
     reg [3:0] mem [0:15];   // no reset: only read back after it is written
 
@@ -104,10 +108,16 @@ module fcapz_ela_mini (
     end
 
     always @(posedge clk) begin
-        probe_r     <= probe_in;
-        probe_prev  <= probe_r;
-        trig_in_s   <= {trig_in_s[0], trigger_in};
-        trigger_out <= fire;
+        probe_s    <= probe_in;
+        probe_r    <= probe_s;
+        probe_prev <= probe_r;
+        trig_in_s  <= {trig_in_s[0], trigger_in};
+    end
+
+    always @(posedge clk) begin
+        // A CTRL write on the same clock discards the trigger, so it must not
+        // reach TRIG_OUT either (and cannot stretch it to two clocks).
+        trigger_out <= fire && !(soft_reset || arm);
 
         if (rst) begin
             pretrig <= 0; posttrig <= 0; trig_mode <= 2'd1;
@@ -115,7 +125,7 @@ module fcapz_ela_mini (
             startup_arm <= 1'b1;
             armed <= 1'b1; triggered <= 0; done <= 0;     // STARTUP_ARM=1
             wr_ptr <= 0; pre_count <= 0; post_left <= 0; start_ptr <= 0;
-            cap_len <= 0; probe_r <= 0; probe_prev <= 0; trig_in_s <= 0;
+            cap_len <= 0;
             trigger_out <= 0;
         end else begin
             if (reg_cmd) begin

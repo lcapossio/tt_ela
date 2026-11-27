@@ -38,14 +38,17 @@ class FakeDemoBoard:
         self.uio_in = _Port()
         self.uo_out = _Port()
         self.uio_out = _Port()
-        self.uio_oe_pico = _Port(board.UIO_OE_PICO)
-        self.rst_n = 1
+        self.uio_oe_pico = _Port(0)  # board.prepare() must set it
+        # Held in reset until the script's first reset_project(False): the
+        # flops have no defined power-up value, and simulation shows that as X.
+        self.rst_n = 0
 
         @resume
         async def cycle():
             # Inputs change while clk is low, like the RP2040 between ticks.
             dut.ui_in.value = self.ui_in.value
-            dut.uio_in.value = self.uio_in.value & self.uio_oe_pico.value
+            pico_oe = self.uio_oe_pico.value
+            dut.uio_in.value = self.uio_in.value & pico_oe
             dut.rst_n.value = self.rst_n
             await Timer(10, unit="ns")
             dut.clk.value = 1
@@ -53,7 +56,13 @@ class FakeDemoBoard:
             dut.clk.value = 0
             await Timer(1, unit="ns")
             self.uo_out.value = int(dut.uo_out.value)
-            self.uio_out.value = int(dut.uio_out.value)
+            # Resolve the shared uio pins: each bit is driven by the RP2040
+            # or by the chip, never both.
+            chip_oe = int(dut.uio_oe.value)
+            assert pico_oe & chip_oe == 0, (
+                f"uio driven by both sides: pico 0x{pico_oe:02x}, chip 0x{chip_oe:02x}")
+            self.uio_out.value = ((self.uio_in.value & pico_oe)
+                                  | (int(dut.uio_out.value) & chip_oe))
 
         self._cycle = cycle
 
@@ -77,7 +86,7 @@ async def test_board_script(dut):
 
     @bridge
     def run():
-        return board.run_tests(board.ELA(tt))
+        return board.run_tests(board.prepare(tt))
 
     failed = await run()
     assert failed == 0, f"{failed} board test(s) failed"

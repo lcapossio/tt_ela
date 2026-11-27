@@ -274,3 +274,147 @@ async def test_id_registers(dut):
     for addr, value in expected.items():
         got = await host.read(addr)
         assert got == value, f"0x{addr:04x}: 0x{got:08x} != 0x{value:08x}"
+
+
+async def count_pulses(dut, bit, counter):
+    """Count rising edges of uo_out[bit], sampled at every falling clk edge."""
+    prev = 0
+    while True:
+        await FallingEdge(dut.clk)
+        cur = (int(dut.uo_out.value) >> bit) & 1
+        if cur and not prev:
+            counter[0] += 1
+        prev = cur
+
+
+@cocotb.test()
+async def test_reset_probe_high(dut):
+    # Startup capture must not see a reset value: with the probe held at 0xF
+    # through reset, the default trigger (value 0, mask 0xF) must not fire
+    # until the probe really is 0.
+    clock = Clock(dut.clk, 20, unit="ns")
+    cocotb.start_soon(clock.start())
+    dut.ena.value = 1
+    dut.ui_in.value = 0xF
+    host = Host(dut)
+    pulses = [0]
+    counter = cocotb.start_soon(count_pulses(dut, 7, pulses))
+    dut.rst_n.value = 0
+    await ClockCycles(dut.clk, 10)
+    dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 20)
+
+    status = await host.read(ADDR_STATUS)
+    assert status & 0x7 == STATUS_ARMED, f"STATUS=0x{status:x}"
+    assert pulses[0] == 0, "TRIG_OUT pulsed with the probe at 0xF"
+
+    dut.ui_in.value = 0x0
+    status = await wait_done(host)
+    assert pulses[0] == 1
+    assert await host.read(ADDR_CAPTURE_LEN) == 1
+    assert await host.read(ADDR_DATA_BASE) == 0x0
+    counter.cancel()
+
+
+@cocotb.test()
+async def test_ext_and_coincident(dut):
+    # TRIG_EXT = AND: a probe match and a TRIG_IN pulse presented on the same
+    # single clock must trigger, and mark that sample.
+    host = await reset(dut)
+    pretrig, posttrig, match, idle = 2, 3, 0xC, 0x3
+    dut.ui_in.value = idle
+    await configure(host, pretrig, posttrig, 0x1, match, 0xF, ext=2)
+    await host.write(ADDR_CTRL, CTRL_ARM)
+    await ClockCycles(dut.clk, 10)
+
+    await FallingEdge(dut.clk)
+    dut.ui_in.value = match
+    host._set(TRIG_IN, 1)
+    await FallingEdge(dut.clk)
+    dut.ui_in.value = idle
+    host._set(TRIG_IN, 0)
+
+    await wait_done(host)
+    samples = await read_capture(dut, host, pretrig + posttrig + 1)
+    assert samples[pretrig] == match, f"trigger sample {samples[pretrig]:x}"
+    assert samples.count(match) == 1
+
+
+async def max_high_width(dut, bit, result):
+    """Longest run of clocks with uo_out[bit] high, sampled at falling edges."""
+    run = 0
+    while True:
+        await FallingEdge(dut.clk)
+        run = run + 1 if (int(dut.uo_out.value) >> bit) & 1 else 0
+        result[0] = max(result[0], run)
+
+
+@cocotb.test()
+async def test_trig_out_one_clock(dut):
+    # TRIG_IN goes high and stays high at a point swept across the clock
+    # where a CTRL re-arm commits. TRIG_OUT must never be high for more than
+    # one clock, and the re-armed capture must complete.
+    host = await reset(dut)
+    for offset in range(0, 20):
+        host._set(TRIG_IN, 0)
+        dut.ui_in.value = 0x3
+        await configure(host, 0, 3, 0x1, 0xC, 0xF, ext=1)  # only TRIG_IN fires
+        await host.write(ADDR_CTRL, CTRL_ARM)
+        await ClockCycles(dut.clk, 10)
+
+        width = [0]
+        monitor = cocotb.start_soon(max_high_width(dut, 7, width))
+
+        async def raise_trig_in():
+            await ClockCycles(dut.clk, offset)
+            await FallingEdge(dut.clk)
+            host._set(TRIG_IN, 1)
+
+        # Re-arm frame; start the delay when the last bit is presented.
+        bits = [1] + Host._bits(ADDR_CTRL, 16) + Host._bits(CTRL_ARM, 32)
+        clk = dut.clk
+        host._set(CS_N, 0)
+        await ClockCycles(clk, HALF)
+        for i, b in enumerate(bits):
+            host._set(MOSI, b)
+            if i == len(bits) - 1:
+                cocotb.start_soon(raise_trig_in())
+            await ClockCycles(clk, HALF)
+            host._set(SCLK, 1)
+            await ClockCycles(clk, HALF)
+            host._set(SCLK, 0)
+        await ClockCycles(clk, HALF)
+        host._set(CS_N, 1)
+        await ClockCycles(clk, 30)
+
+        status = await host.read(ADDR_STATUS)
+        monitor.cancel()
+        assert width[0] == 1, f"offset {offset}: TRIG_OUT high for {width[0]} clocks"
+        assert status & STATUS_DONE, f"offset {offset}: STATUS=0x{status:x}"
+    host._set(TRIG_IN, 0)
+
+
+async def drive_mod15(dut):
+    """Probe counts 0..14 and wraps, so a 16-sample age error shows."""
+    count = 0
+    while True:
+        await FallingEdge(dut.clk)
+        dut.ui_in.value = count
+        count = (count + 1) % 15
+
+
+@cocotb.test()
+async def test_full_depth(dut):
+    host = await reset(dut)
+    for pretrig, posttrig in ((15, 0), (0, 15), (7, 8)):
+        trig_value = 0x9
+        await configure(host, pretrig, posttrig, 0x1, trig_value, 0xF)
+        ramp = cocotb.start_soon(drive_mod15(dut))
+        await host.write(ADDR_CTRL, CTRL_ARM)
+        await wait_done(host)
+        ramp.cancel()
+        samples = await read_capture(dut, host, 16)
+        assert samples[pretrig] == trig_value, f"({pretrig},{posttrig}) trigger sample"
+        for i in range(1, 16):
+            assert samples[i] == (samples[i - 1] + 1) % 15, (
+                f"({pretrig},{posttrig}) gap at {i}: {samples}")

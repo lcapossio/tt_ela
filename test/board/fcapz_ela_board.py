@@ -145,6 +145,12 @@ class ELA:
     # ---- capture helpers ----
 
     def configure(self, pretrig, posttrig, mode, value, mask, ext=0):
+        """Stop the analyzer and set up a capture. Arm it with CTRL = 1."""
+        if not (0 <= pretrig and 0 <= posttrig and pretrig + posttrig <= 15):
+            raise ValueError("need PRETRIG + POSTTRIG <= 15")
+        # STARTUP_ARM = 0 first, so the CTRL reset leaves the analyzer idle
+        # and a half-written trigger cannot fire while it is configured.
+        self.write(STARTUP_ARM, 0)
         self.write(CTRL, CTRL_RESET)
         self.write(PRETRIG, pretrig)
         self.write(POSTTRIG, posttrig)
@@ -171,6 +177,8 @@ class ELA:
 
     def read_capture(self):
         n = self.read(CAPTURE_LEN)
+        if not 1 <= n <= 16:
+            raise AssertionError("CAPTURE_LEN %d out of range" % n)
         self.write(BURST_PTR, 0)  # what full-core host code does; no effect here
         return [self.read(DATA + 4 * i) for i in range(n)]
 
@@ -245,6 +253,23 @@ def test_startup_arm(ela):
     _check(ela.read(CAPTURE_LEN) == 1, "CAPTURE_LEN != 1")
 
 
+def test_reset_probe_high(ela):
+    # With the probe at 0xF through reset, the default trigger (value 0) must
+    # wait for the probe to really read 0, and capture that 0.
+    ela.set_probe(0xF)
+    ela.trig_out_seen = 0
+    ela.reset()
+    ela.tick(20)
+    status = ela.read(STATUS)
+    _check(status & 0x7 == ST_ARMED, "STATUS=0x%x with probe 0xF" % status)
+    _check(ela.trig_out_seen == 0, "TRIG_OUT pulsed with probe 0xF")
+    ela.set_probe(0)
+    ela.wait_done()
+    _check(ela.trig_out_seen == 1, "TRIG_OUT high for %d clocks" % ela.trig_out_seen)
+    samples = ela.read_capture()
+    _check(samples == [0], "capture %s, expected 0" % _hexlist(samples))
+
+
 def test_capture(ela):
     ela.reset()
     pretrig, posttrig, trig_value = 4, 7, 0xA
@@ -301,13 +326,35 @@ def test_ext_trigger(ela):
     _check(all(s == 0x3 for s in samples), "samples not all 3")
 
 
+def test_ext_and(ela):
+    # TRIG_EXT = AND: probe match and TRIG_IN on the same single clock.
+    ela.reset()
+    pretrig, posttrig, match, idle = 2, 3, 0xC, 0x3
+    ela.set_probe(idle)
+    ela.configure(pretrig, posttrig, MODE_VALUE, match, 0xF, ext=2)
+    ela.write(CTRL, CTRL_ARM)
+    ela.tick(10)
+    ela.set_probe(match)
+    ela.set_trig_in(1)
+    ela.tick(1)
+    ela.set_probe(idle)
+    ela.set_trig_in(0)
+    ela.wait_done()
+    samples = ela.read_capture()
+    print("  samples:", _hexlist(samples))
+    _check(samples[pretrig] == match, "trigger sample %x" % samples[pretrig])
+    _check(samples.count(match) == 1, "match captured more than once")
+
+
 TESTS = (
     test_registers,
     test_id_registers,
     test_startup_arm,
+    test_reset_probe_high,
     test_capture,
     test_change_trigger,
     test_ext_trigger,
+    test_ext_and,
 )
 
 
@@ -325,6 +372,18 @@ def run_tests(ela):
     return failed
 
 
+def prepare(tt):
+    """Set the RP2040 pin directions, idle the serial pins and return an ELA.
+
+    Clocks the project a few times so the tile sees CS_N high before the
+    first frame. Does not reset the project, so an earlier capture survives.
+    """
+    tt.uio_oe_pico.value = UIO_OE_PICO
+    ela = ELA(tt)
+    ela.tick(8)
+    return ela
+
+
 def setup():
     """Select the project on the demo board and return an ELA object."""
     from ttboard.demoboard import DemoBoard
@@ -333,11 +392,11 @@ def setup():
     tt = DemoBoard.get()
     if not tt.shuttle.has(PROJECT):
         raise RuntimeError(PROJECT + " is not on this chip (check the shuttle)")
-    getattr(tt.shuttle, PROJECT).enable()
+    if getattr(tt.shuttle, PROJECT).enable() is False:
+        raise RuntimeError("could not select " + PROJECT)
     tt.mode = RPMode.ASIC_RP_CONTROL
     tt.clock_project_stop()
-    tt.uio_oe_pico.value = UIO_OE_PICO
-    return ELA(tt)
+    return prepare(tt)
 
 
 def run():
