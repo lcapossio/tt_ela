@@ -20,7 +20,7 @@ RP2040 drives the probe inputs, the SPI pins and TRIG_IN itself.
 ELA is also usable on its own, for example to capture real signals:
 
     >>> ela = fcapz_ela_board.setup()
-    >>> hex(ela.read(0x0000))     # VERSION: 0x44c41
+    >>> hex(ela.read(0x0000))     # VERSION: 0x54c41
 """
 
 PROJECT = "tt_um_fcapz_ela_tile"
@@ -37,7 +37,7 @@ ARMED, TRIG_OUT = 4, 7
 # SPI half period in project clocks. The tile needs SCLK <= clk/8.
 HALF = 4
 
-# ELA registers (fpgacapZero 0.4 register map subset)
+# ELA registers (fpgacapZero 0.5 register map subset)
 VERSION = 0x0000
 CTRL = 0x0004
 STATUS = 0x0008
@@ -57,12 +57,14 @@ NUM_SEGMENTS = 0x00B8
 SEG_STATUS = 0x00BC
 STARTUP_ARM = 0x00D8
 COMPARE_CAPS = 0x00E0
+DATA_OFFSET = 0x00F4
+CAPTURE_GEN = 0x00F8
 DATA = 0x0100
 
 CTRL_ARM, CTRL_RESET = 0x1, 0x2
 ST_ARMED, ST_TRIGGERED, ST_DONE = 0x1, 0x2, 0x4
 
-MODE_VALUE, MODE_CHANGE = 0x1, 0x2
+MODE_VALUE, MODE_CHANGE, MODE_BOTH = 0x1, 0x2, 0x3
 
 
 class ELA:
@@ -231,12 +233,12 @@ def test_registers(ela):
 def test_id_registers(ela):
     ela.reset()
     expected = (
-        (VERSION, 0x00044C41),
+        (VERSION, 0x00054C41),
         (FEATURES, 0x00010141),
         (NUM_CHAN, 1),
         (NUM_SEGMENTS, 1),
         (SEG_STATUS, 0x80000000),
-        (COMPARE_CAPS, 0x000A01C3),
+        (COMPARE_CAPS, 0x007A01C3),
     )
     for addr, value in expected:
         got = ela.read(addr)
@@ -346,6 +348,47 @@ def test_ext_and(ela):
     _check(samples.count(match) == 1, "match captured more than once")
 
 
+def test_both_mode(ela):
+    # TRIG_MODE 3 = value match OR change: a steady probe equal to TRIG_VALUE
+    # fires it, while change detect alone (mode 2) waits.
+    ela.reset()
+    ela.set_probe(0x6)
+    ela.configure(0, 2, MODE_CHANGE, 0x6, 0xF)
+    ela.write(CTRL, CTRL_ARM)
+    ela.tick(20)
+    status = ela.read(STATUS)
+    _check(status & 0x7 == ST_ARMED, "mode 2 STATUS=0x%x on a steady probe" % status)
+    ela.configure(0, 2, MODE_BOTH, 0x6, 0xF)
+    ela.write(CTRL, CTRL_ARM)
+    ela.wait_done()
+    samples = ela.read_capture()
+    _check(samples == [6, 6, 6], "mode 3 capture %s" % _hexlist(samples))
+
+
+def test_gen_offset(ela):
+    # CAPTURE_GEN moves by exactly one per CTRL arm/reset write, and
+    # DATA_OFFSET shifts DATA reads by whole samples.
+    ela.reset()
+    gen = ela.read(CAPTURE_GEN)
+    ela.write(CTRL, CTRL_ARM | CTRL_RESET)
+    ela.write(CTRL, 0)
+    got = ela.read(CAPTURE_GEN)
+    _check(got == (gen + 1) & 0xFFFF, "CAPTURE_GEN %d -> %d, expected +1" % (gen, got))
+
+    ela.configure(4, 7, MODE_VALUE, 0xA, 0xF)
+    ela.write(CTRL, CTRL_ARM)
+    ela.ramp(40)
+    ela.wait_done()
+    samples = ela.read_capture()
+    ela.write(DATA_OFFSET, 5)
+    shifted = [ela.read(DATA + 4 * i) for i in range(8)]
+    want = samples[5:] + [0] * (5 + 8 - len(samples))
+    _check(shifted == want[:8], "offset 5: %s, expected %s"
+           % (_hexlist(shifted), _hexlist(want[:8])))
+    ela.write(CTRL, CTRL_RESET)
+    _check(ela.read(DATA_OFFSET) == 0, "CTRL reset did not clear DATA_OFFSET")
+
+
 TESTS = (
     test_registers,
     test_id_registers,
@@ -355,6 +398,8 @@ TESTS = (
     test_change_trigger,
     test_ext_trigger,
     test_ext_and,
+    test_both_mode,
+    test_gen_offset,
 )
 
 

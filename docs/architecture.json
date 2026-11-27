@@ -145,7 +145,7 @@
       "id": "regs",
       "lines": [
         "config regs + read mux",
-        "0.4 register map subset",
+        "0.5 register map subset",
         "DATA @ 0x100 + 4i"
       ],
       "domain": "clk",

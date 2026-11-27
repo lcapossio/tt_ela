@@ -28,6 +28,8 @@ ADDR_TRIG_MASK = 0x0028
 ADDR_BURST_PTR = 0x002C
 ADDR_TRIG_EXT = 0x00B4
 ADDR_STARTUP_ARM = 0x00D8
+ADDR_DATA_OFFSET = 0x00F4
+ADDR_CAPTURE_GEN = 0x00F8
 ADDR_DATA_BASE = 0x0100
 
 CTRL_ARM = 0x1
@@ -262,14 +264,15 @@ async def test_id_registers(dut):
     # Constant words a host uses to discover the core's capabilities.
     host = await reset(dut)
     expected = {
-        ADDR_VERSION: 0x00044C41,
+        ADDR_VERSION: 0x00054C41,  # fpgacapZero 0.5, core id "LA"
         0x003C: 0x00010141,  # FEATURES: 1 stage, ext trigger, 1 chan, 1 seg
         0x00A4: 1,           # NUM_CHAN
         0x00B8: 1,           # NUM_SEGMENTS
         0x00BC: 0x80000000,  # SEG_STATUS without segments
         0x00C4: 0,           # TIMESTAMP_W
         0x00D0: 0,           # PROBE_MUX_W
-        0x00E0: 0x000A01C3,  # COMPARE_CAPS
+        0x00CC: 0,           # RLE_W: no run-length capture
+        0x00E0: 0x007A01C3,  # COMPARE_CAPS: + DATA_OFFSET, CAPTURE_GEN, SQ_MODE
     }
     for addr, value in expected.items():
         got = await host.read(addr)
@@ -418,3 +421,115 @@ async def test_full_depth(dut):
         for i in range(1, 16):
             assert samples[i] == (samples[i - 1] + 1) % 15, (
                 f"({pretrig},{posttrig}) gap at {i}: {samples}")
+
+
+@cocotb.test()
+async def test_trig_mode_both(dut):
+    """TRIG_MODE 3 fires on a value match OR a change (fpgacapZero 0.5.2)."""
+    host = await reset(dut)
+    await host.write(ADDR_STARTUP_ARM, 0)
+
+    # Steady probe equal to TRIG_VALUE: mode 2 (change) must not fire,
+    # mode 3 must.
+    dut.ui_in.value = 0x6
+    await configure(host, 0, 2, 0x2, 0x6, 0xF)
+    await host.write(ADDR_CTRL, CTRL_ARM)
+    await ClockCycles(dut.clk, 50)
+    status = await host.read(ADDR_STATUS)
+    assert status & STATUS_ARMED and not status & STATUS_TRIGGERED, f"STATUS=0x{status:x}"
+
+    await configure(host, 0, 2, 0x3, 0x6, 0xF)
+    await host.write(ADDR_CTRL, CTRL_ARM)
+    await wait_done(host)
+    samples = await read_capture(dut, host, 3)
+    assert all(s == 0x6 for s in samples)
+
+    # Probe never equal to TRIG_VALUE: mode 3 still fires on a change.
+    dut.ui_in.value = 0x1
+    await configure(host, 1, 1, 0x3, 0xF, 0xF)
+    await host.write(ADDR_CTRL, CTRL_ARM)
+    await ClockCycles(dut.clk, 50)
+    status = await host.read(ADDR_STATUS)
+    assert status & STATUS_ARMED and not status & STATUS_TRIGGERED, f"STATUS=0x{status:x}"
+    dut.ui_in.value = 0x2
+    await wait_done(host)
+    samples = await read_capture(dut, host, 3)
+    assert samples == [0x1, 0x2, 0x2], samples
+
+
+@cocotb.test()
+async def test_data_offset(dut):
+    """DATA_OFFSET shifts DATA reads by whole samples (fpgacapZero 0.5)."""
+    host = await reset(dut)
+    pretrig, posttrig = 4, 7
+    n = pretrig + posttrig + 1
+
+    await configure(host, pretrig, posttrig, 0x1, 0xA, 0xF)
+    ramp = cocotb.start_soon(drive_ramp(dut))
+    await host.write(ADDR_CTRL, CTRL_ARM)
+    await wait_done(host)
+    ramp.cancel()
+    samples = await read_capture(dut, host, n)
+    assert await host.read(ADDR_DATA_OFFSET) == 0
+
+    for offset in (1, 5, 11, 15):
+        await host.write(ADDR_DATA_OFFSET, offset)
+        assert await host.read(ADDR_DATA_OFFSET) == offset
+        for i in range(16):
+            got = await host.read(ADDR_DATA_BASE + 4 * i)
+            want = samples[i + offset] if i + offset < n else 0
+            assert got == want, f"offset {offset} DATA[{i}] = {got:x}, want {want:x}"
+
+    # Offsets of 16 or more point past the buffer: every DATA read is 0.
+    for value in (16, 0x13, 0xFFFFFFF0, 0x80000000):
+        await host.write(ADDR_DATA_OFFSET, value)
+        assert await host.read(ADDR_DATA_OFFSET) == 16
+        assert await host.read(ADDR_DATA_BASE) == 0
+
+    # A CTRL write without arm or reset keeps it; arm or reset clears it.
+    await host.write(ADDR_DATA_OFFSET, 3)
+    await host.write(ADDR_CTRL, 0)
+    assert await host.read(ADDR_DATA_OFFSET) == 3
+    assert await host.read(ADDR_DATA_BASE) == samples[3]
+    await host.write(ADDR_CTRL, CTRL_RESET)
+    assert await host.read(ADDR_DATA_OFFSET) == 0
+    await host.write(ADDR_DATA_OFFSET, 3)
+    await host.write(ADDR_CTRL, CTRL_ARM)
+    assert await host.read(ADDR_DATA_OFFSET) == 0
+
+
+@cocotb.test()
+async def test_capture_gen(dut):
+    """CAPTURE_GEN: +1 per CTRL arm/reset write and per reset release."""
+    host = await reset(dut)
+    assert await host.read(ADDR_CAPTURE_GEN) == 1  # the reset release
+
+    steps = [
+        (ADDR_CTRL, CTRL_ARM, 1),
+        (ADDR_CTRL, CTRL_RESET, 1),
+        (ADDR_CTRL, CTRL_ARM | CTRL_RESET, 1),  # one write counts once
+        (ADDR_CTRL, 0, 0),
+        (ADDR_CTRL, 0xFFFFFFFC, 0),             # no arm or reset bit
+        (ADDR_STARTUP_ARM, 1, 0),
+        (ADDR_CAPTURE_GEN, 0x1234, 0),          # read only
+    ]
+    gen = 1
+    for addr, data, inc in steps:
+        await host.write(addr, data)
+        gen += inc
+        got = await host.read(ADDR_CAPTURE_GEN)
+        assert got == gen, f"after write 0x{data:x} to 0x{addr:04x}: {got} != {gen}"
+        assert await host.read(ADDR_CAPTURE_GEN) == gen  # reads have no effect
+
+    # Carry into bits [15:8], which MISO takes from the live read mux.
+    while gen < 0x100:
+        await host.write(ADDR_CTRL, CTRL_ARM)
+        gen += 1
+    assert await host.read(ADDR_CAPTURE_GEN) == 0x100
+
+    # A chip reset clears it, then its release counts one.
+    dut.rst_n.value = 0
+    await ClockCycles(dut.clk, 10)
+    dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 10)
+    assert await host.read(ADDR_CAPTURE_GEN) == 1

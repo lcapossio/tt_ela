@@ -24,7 +24,7 @@
 //   bits 17..48: write data (write) or read data on MISO (read)
 // Bits beyond 48 are ignored until CS_N rises.
 //
-// Register map: subset of the fpgacapZero 0.4 ELA map (see fcapz_ela_mini.v).
+// Register map: subset of the fpgacapZero 0.5 ELA map (see fcapz_ela_mini.v).
 // Captured samples are at 0x0100 + 4*i (i = 0 .. CAPTURE_LEN-1, oldest
 // first) once STATUS.done is set.
 
@@ -65,6 +65,7 @@ module tt_um_fcapz_ela_tile (
     reg       addr_hi;     // any of address bits [15:9] set
     reg [8:0] addr;
     reg [3:0] wdata;       // last 4 data bits = write data [3:0] (MSB-first frame)
+    reg       wdata_hi;    // any write data bit [31:4] set
     reg [7:0] rd_snap;     // read data [7:0], frozen for the frame
     reg       wr_pulse, rd_pulse;
     reg       busy;
@@ -77,6 +78,7 @@ module tt_um_fcapz_ela_tile (
 
         if (rst) begin
             bitcnt <= 0; rw <= 0; addr_hi <= 0; addr <= 0; wdata <= 0;
+            wdata_hi <= 0;
             rd_snap <= 0; busy <= 0;
         end else if (cs_n) begin
             bitcnt <= 0;
@@ -86,10 +88,13 @@ module tt_um_fcapz_ela_tile (
                 rw      <= mosi;
                 addr_hi <= 1'b0;   // the old address would shift into addr_hi
                 addr    <= 9'd0;
+                wdata_hi <= 1'b0;
             end else if (bitcnt <= 16) begin
                 {addr_hi, addr} <= {addr_hi | addr[8], addr[7:0], mosi};
             end else begin
                 wdata <= {wdata[2:0], mosi};
+                // bits 17..44 carry data bits [31:4]
+                if (bitcnt <= 44) wdata_hi <= wdata_hi | mosi;
             end
             bitcnt <= bitcnt + 1'b1;
 
@@ -99,7 +104,9 @@ module tt_um_fcapz_ela_tile (
         end
 
         // The address is complete when rd_pulse is high; the core's read
-        // mux is combinational. Bits [31:8] depend only on the address.
+        // mux is combinational. Bits [31:8] cannot change during a read
+        // frame (they depend on the address and on CAPTURE_GEN, which moves
+        // only on a register write or a reset), so only [7:0] is frozen.
         if (rd_pulse) rd_snap <= core_rdata[7:0];
     end
 
@@ -123,6 +130,7 @@ module tt_um_fcapz_ela_tile (
         .reg_addr_hi (addr_hi),
         .reg_addr    (addr),
         .reg_wdata   (wdata),
+        .reg_wdata_hi(wdata_hi),
         .reg_rdata   (core_rdata)
     );
 

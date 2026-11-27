@@ -9,7 +9,7 @@ You can also include images in this folder and reference them in the markdown. E
 
 ## How it works
 
-This is a compact, single-tile version of the embedded logic analyzer (ELA) from [fpgacapZero](https://github.com/lcapossio/fpgacapZero), with a 4-bit probe and a 16-sample capture buffer. The full upstream core does not fit in one tile, so the analyzer is a small reimplementation (`src/fcapz_ela_mini.v`) of a subset of the fpgacapZero 0.4 ELA register map, with the same capture behavior. Its ID registers (VERSION, FEATURES, COMPARE_CAPS) read the same as the full core built with this configuration (one trigger stage). As on that core, TRIG_MODE selects only value match or change detect, even though COMPARE_CAPS lists the modes its comparator can do.
+This is a compact, single-tile version of the embedded logic analyzer (ELA) from [fpgacapZero](https://github.com/lcapossio/fpgacapZero), with a 4-bit probe and a 16-sample capture buffer. The full upstream core does not fit in one tile, so the analyzer is a small reimplementation (`src/fcapz_ela_mini.v`) of a subset of the fpgacapZero 0.5 ELA register map (release 0.5.2), with the same capture behavior. Its ID registers (VERSION, FEATURES, COMPARE_CAPS) read the same as the full core built with this configuration (one trigger stage). As on that core, TRIG_MODE selects value match, change detect or both, even though COMPARE_CAPS lists more modes for its comparator.
 
 It samples `ui_in[3:0]` on every clock into a ring buffer, through a 2-flop synchronizer on each bit. A trigger can fire on a value match (masked compare) or on any change of the masked bits, optionally combined (OR or AND) with the external `TRIG_IN` pin. `TRIG_IN` has the same synchronizer depth as the probe, so it lines up with the probe sample taken on the same clock. The buffer keeps a configurable number of samples from before the trigger, then fills the rest after it.
 
@@ -31,7 +31,7 @@ The repository includes a self-test that runs on the demo board's RP2040 with th
    fcapz_ela_board.run()
    ```
 
-The script selects the project, then runs eight tests: register read/write, ID registers, startup arm (with the probe low, then held high through reset), value trigger, change trigger, and external trigger in OR and AND mode. It prints `PASS` or `FAIL` for each and ends with `8/8 tests passed` on a working chip. The capture tests also print the captured samples. For example, the value-trigger test captures a 4-bit counter around the value `a`:
+The script selects the project, then runs ten tests: register read/write, ID registers, startup arm (with the probe low, then held high through reset), value trigger, change trigger, external trigger in OR and AND mode, the value-or-change trigger mode, and CAPTURE_GEN with DATA_OFFSET. It prints `PASS` or `FAIL` for each and ends with `10/10 tests passed` on a working chip. The capture tests also print the captured samples. For example, the value-trigger test captures a 4-bit counter around the value `a`:
 
 ```
   samples: 6 7 8 9 a b c d e f 0 1
@@ -42,7 +42,7 @@ To use the analyzer from the REPL directly:
 
 ```python
 ela = fcapz_ela_board.setup()
-hex(ela.read(0x0000))   # VERSION, '0x44c41'
+hex(ela.read(0x0000))   # VERSION, '0x54c41'
 ela.write(0x0004, 0x1)  # arm
 ```
 
@@ -76,22 +76,24 @@ Registers are 32 bits on the bus but store only the bits a 4-bit probe needs: a 
 
 | Address | Name | Notes |
 |---------|------|-------|
-| 0x0000 | VERSION | 0x00044C41: `[15:0]` core id 0x4C41 ("LA"), `[31:16]` fpgacapZero version 0.4 |
+| 0x0000 | VERSION | 0x00054C41: `[15:0]` core id 0x4C41 ("LA"), `[31:16]` fpgacapZero version 0.5 |
 | 0x0004 | CTRL | write only: bit 0 = arm, bit 1 = reset capture (re-arms if STARTUP_ARM is set) |
-| 0x0008 | STATUS | bit 0 armed, bit 1 triggered, bit 2 done (bit 3 overflow is always 0) |
+| 0x0008 | STATUS | bit 0 armed, bit 1 triggered, bit 2 done (bit 3 overflow and bit 4 command pending are always 0: a CTRL write takes effect at once) |
 | 0x000C / 0x0010 | SAMPLE_W / DEPTH | read 4 and 16 |
 | 0x0014 / 0x0018 | PRETRIG / POSTTRIG | samples kept before / after the trigger sample. Keep PRETRIG + POSTTRIG <= 15 |
 | 0x001C | CAPTURE_LEN | samples in the finished capture (PRETRIG + POSTTRIG + 1). Set when the trigger fires and kept until the next trigger, so read it after done |
-| 0x0020 | TRIG_MODE | bit 1 = change detect, otherwise value match (default 1) |
+| 0x0020 | TRIG_MODE | 1 = value match (default), 2 = change detect, 3 = value match or change (0 = value match) |
 | 0x0024 / 0x0028 | TRIG_VALUE / TRIG_MASK | compare value and mask |
 | 0x002C | BURST_PTR | accepted for compatibility, no effect: the capture start is latched automatically |
 | 0x003C | FEATURES | 0x00010141: one trigger stage, external trigger, one channel, one segment |
 | 0x00A4 / 0x00B8 | NUM_CHAN / NUM_SEGMENTS | read 1 |
 | 0x00BC / 0x00C8 | SEG_STATUS / SEG_START | 0x80000000 / buffer index of the capture start (like CAPTURE_LEN, valid after done) |
-| 0x00E0 | COMPARE_CAPS | 0x000A01C3, same as the full core. Only value match and change detect can be selected, through TRIG_MODE |
+| 0x00E0 | COMPARE_CAPS | 0x007A01C3, same as the full core: bit 20 DATA_OFFSET, bit 21 CAPTURE_GEN, bit 22 storage-qualifier encoding (no storage qualifier here). Only the TRIG_MODE modes can be selected |
 | 0x00B4 | TRIG_EXT | bits `[1:0]`, `TRIG_IN` use: 0 = ignored (default), 1 = OR with internal trigger, 2 = AND |
 | 0x00D8 | STARTUP_ARM | bit 0: arm automatically after reset and after a CTRL reset |
-| 0x0100 + 4*i | DATA | sample i of the capture, oldest first. Reads 0 until done, and for i >= CAPTURE_LEN |
+| 0x00F4 | DATA_OFFSET | added to the sample index of every DATA read. Any value of 16 or more reads back as 16 and makes DATA read 0. Cleared by a CTRL write with bit 0 or 1 set |
+| 0x00F8 | CAPTURE_GEN | read only, `[15:0]`: counts CTRL writes with bit 0 or 1 set (one per write) and reset releases. Reads 1 after reset. A host can compare it before and after a readout |
+| 0x0100 + 4*i | DATA | sample i + DATA_OFFSET of the capture, oldest first. Reads 0 until done, and past CAPTURE_LEN |
 
 ### Capturing
 

@@ -2,20 +2,24 @@
 // Compact single-clock reimplementation of the fpgacapZero ELA for one
 // Tiny Tapeout tile: 4-bit probe, 16-sample buffer, one comparator.
 //
-// It implements a subset of the fpgacapZero 0.4 ELA register map with the
-// same capture semantics as rtl/fcapz_ela.v at SAMPLE_W=4, DEPTH=16,
+// It implements a subset of the fpgacapZero 0.5 ELA register map with the
+// same capture semantics as rtl/fcapz_ela.v (0.5.2) at SAMPLE_W=4, DEPTH=16,
 // TRIG_STAGES=1, DUAL_COMPARE=0, EXT_TRIG_EN=1:
 //   - the trigger is accepted once PRETRIG samples are stored after arming,
 //   - the trigger sample sits at index PRETRIG of the DATA window,
 //   - CAPTURE_LEN = PRETRIG + POSTTRIG + 1 (keep it <= 16),
-//   - TRIG_MODE[1] selects change detect, otherwise masked equality,
-//   - CTRL bit 1 (reset) re-arms when STARTUP_ARM is set.
+//   - TRIG_MODE 3 = value match OR change, 2 = change, 0/1 = value match,
+//   - CTRL bit 1 (reset) re-arms when STARTUP_ARM is set,
+//   - DATA_OFFSET (0xF4) adds a sample offset to DATA reads; CAPTURE_GEN
+//     (0xF8) counts CTRL arm/reset writes and reset releases.
 // Registers hold only the bits a 4-bit probe needs. Unlisted registers,
 // CTRL, TRIG_DELAY and TRIG_HOLDOFF read as 0 and ignore writes.
 //
 // Register bus: reg_addr is the byte address with bits [15:9] reduced to
-// reg_addr_hi (set if any of them is 1). reg_rdata is combinational;
-// bits [31:8] depend only on the address.
+// reg_addr_hi (set if any of them is 1). reg_wdata_hi is set if any write
+// data bit [31:4] is 1. reg_rdata is combinational; bits [31:8] depend only
+// on the address and on state that changes only on a register write or a
+// reset (CAPTURE_GEN), so they are stable during a read frame.
 
 `default_nettype none
 `timescale 1ns/1ps
@@ -31,17 +35,20 @@ module fcapz_ela_mini (
     input  wire        reg_wr,
     input  wire        reg_addr_hi,
     input  wire [8:0]  reg_addr,
-    input  wire [3:0]  reg_wdata,   // write data [3:0]; upper bits ignored
+    input  wire [3:0]  reg_wdata,   // write data [3:0]
+    input  wire        reg_wdata_hi, // any write data bit [31:4] set
     output reg  [31:0] reg_rdata
 );
 
-    // fpgacapZero 0.4 register map, core id "LA"
-    localparam [31:0] VERSION = 32'h0004_4C41;
+    // fpgacapZero 0.5 register map, core id "LA"
+    localparam [31:0] VERSION = 32'h0005_4C41;
     // Constant ID words, equal to rtl/fcapz_ela.v at these parameters:
     // FEATURES = {TIMESTAMP_W 0, NUM_SEGMENTS 1, NUM_CHANNELS 1,
     //             HAS_EXT_TRIG, TRIG_STAGES 1}
     localparam [31:0] FEATURES     = 32'h0001_0141;
-    localparam [31:0] COMPARE_CAPS = 32'h000A_01C3;
+    // COMPARE_CAPS = modes 0x1C3 | bit17 | bit19 (timestamp base, full width)
+    //   | bit20 DATA_OFFSET | bit21 CAPTURE_GEN | bit22 SQ_MODE encoding
+    localparam [31:0] COMPARE_CAPS = 32'h007A_01C3;
 
     localparam [7:0] ADDR_VERSION     = 8'h00;
     localparam [7:0] ADDR_CTRL        = 8'h04;
@@ -62,6 +69,8 @@ module fcapz_ela_mini (
     localparam [7:0] ADDR_SEG_START   = 8'hC8;
     localparam [7:0] ADDR_STARTUP_ARM = 8'hD8;
     localparam [7:0] ADDR_COMPARE_CAPS = 8'hE0;
+    localparam [7:0] ADDR_DATA_OFFSET = 8'hF4;
+    localparam [7:0] ADDR_CAPTURE_GEN = 8'hF8;
     // DATA window: 0x0100 + 4*i, i = 0..15
 
     // ---------------- configuration ----------------
@@ -73,6 +82,9 @@ module fcapz_ela_mini (
     reg       armed, triggered, done;
     reg [3:0] wr_ptr, pre_count, post_left, start_ptr;
     reg [4:0] cap_len;
+    reg [4:0] data_offset;  // DATA read offset in samples, 16 = past the buffer
+    reg [15:0] capture_gen;
+    reg        rst_d;
     // Input pipeline, no reset: probe_s/probe_r form a 2-FF synchroniser that
     // matches trig_in_s, so TRIG_IN and the probe reach the trigger decision
     // on the same clock. Without a reset they hold real pin samples taken
@@ -91,7 +103,10 @@ module fcapz_ela_mini (
     wire [3:0] m_probe = probe_r    & trig_mask;
     wire [3:0] m_prev  = probe_prev & trig_mask;
     wire [3:0] m_value = trig_value & trig_mask;
-    wire hit_int = trig_mode[1] ? (m_probe != m_prev) : (m_probe == m_value);
+    wire hit_eq  = m_probe == m_value;
+    wire hit_chg = m_probe != m_prev;
+    wire hit_int = (trig_mode == 2'd3) ? (hit_eq | hit_chg)
+                 : trig_mode[1]        ? hit_chg : hit_eq;
     reg  hit;
     always @(*) begin
         case (trig_ext)
@@ -114,6 +129,19 @@ module fcapz_ela_mini (
         trig_in_s  <= {trig_in_s[0], trigger_in};
     end
 
+    // CAPTURE_GEN: +1 for every CTRL write with the arm or reset bit set and
+    // +1 when rst is released (each can start a capture that overwrites the
+    // buffer). Reset to 0 so it never powers up unknown.
+    wire gen_write   = ctrl_wr && (reg_wdata[0] || reg_wdata[1]);
+    wire gen_release = rst_d && !rst;
+    always @(posedge clk) begin
+        rst_d <= rst;
+        if (rst)
+            capture_gen <= 16'd0;
+        else
+            capture_gen <= capture_gen + {15'd0, gen_write} + {15'd0, gen_release};
+    end
+
     always @(posedge clk) begin
         // A CTRL write on the same clock discards the trigger, so it must not
         // reach TRIG_OUT either (and cannot stretch it to two clocks).
@@ -125,7 +153,7 @@ module fcapz_ela_mini (
             startup_arm <= 1'b1;
             armed <= 1'b1; triggered <= 0; done <= 0;     // STARTUP_ARM=1
             wr_ptr <= 0; pre_count <= 0; post_left <= 0; start_ptr <= 0;
-            cap_len <= 0;
+            cap_len <= 0; data_offset <= 0;
             trigger_out <= 0;
         end else begin
             if (reg_cmd) begin
@@ -137,9 +165,15 @@ module fcapz_ela_mini (
                     ADDR_TRIG_MASK:   trig_mask   <= reg_wdata[3:0];
                     ADDR_TRIG_EXT:    trig_ext    <= reg_wdata[1:0];
                     ADDR_STARTUP_ARM: startup_arm <= reg_wdata[0];
+                    ADDR_DATA_OFFSET: data_offset <= reg_wdata_hi ? 5'd16
+                                                                  : {1'b0, reg_wdata};
                     default: ;
                 endcase
             end
+
+            // Every CTRL arm or reset clears DATA_OFFSET (as upstream), so an
+            // offset left behind cannot shift the next capture's reads.
+            if (gen_write) data_offset <= 0;
 
             if (soft_reset || arm) begin
                 armed <= arm; triggered <= 0; done <= 0;
@@ -166,8 +200,9 @@ module fcapz_ela_mini (
     // ---------------- register read ----------------
     wire [3:0] data_idx  = reg_addr[5:2];
     wire       data_addr = reg_addr[8] && reg_addr[7:6] == 2'b00 && reg_addr[1:0] == 2'b00;
-    wire [3:0] data_ptr  = start_ptr + data_idx;
-    wire       data_ok   = done && {1'b0, data_idx} < cap_len;
+    wire [5:0] data_sidx = {2'b00, data_idx} + {1'b0, data_offset};  // sample index
+    wire [3:0] data_ptr  = start_ptr + data_sidx[3:0];
+    wire       data_ok   = done && data_sidx < {1'b0, cap_len};
 
     always @(*) begin
         reg_rdata = 32'h0;
@@ -194,6 +229,8 @@ module fcapz_ela_mini (
                     ADDR_SEG_START:    reg_rdata[3:0] = start_ptr;
                     ADDR_COMPARE_CAPS: reg_rdata = COMPARE_CAPS;
                     ADDR_STARTUP_ARM:  reg_rdata[0]   = startup_arm;
+                    ADDR_DATA_OFFSET:  reg_rdata[4:0] = data_offset;
+                    ADDR_CAPTURE_GEN:  reg_rdata[15:0] = capture_gen;
                     default: ;
                 endcase
             end

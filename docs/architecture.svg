@@ -50,7 +50,7 @@
   <text x="506" y="450" text-anchor="middle" font-size="17" font-weight="500" fill="#1f2937">16 x 4b flop ring</text>
   <rect id="regs" x="756" y="394" width="220" height="84" fill="#90CAF9" stroke="#0D47A1" stroke-width="1.4" rx="8"/>
   <text x="866" y="426" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2937">config regs + read mux</text>
-  <text x="866" y="441" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">0.4 register map subset</text>
+  <text x="866" y="441" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">0.5 register map subset</text>
   <text x="866" y="456" text-anchor="middle" font-size="14" font-weight="500" fill="#1f2937">DATA @ 0x100 + 4i</text>
   <rect id="sync" x="396" y="558" width="220" height="84" fill="url(#grad-sync)" stroke="#1f2937" stroke-width="1.4" rx="8"/>
   <text x="506" y="596" text-anchor="middle" font-size="17" font-weight="600" fill="#1f2937">2-FF synchronisers</text>
