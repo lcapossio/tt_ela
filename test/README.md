@@ -32,6 +32,11 @@ make -B FST=
 
 This will generate `tb.vcd` instead of `tb.fst`.
 
+## Tests
+
+- `test.py`: cocotb tests for registers, value, change and external triggers, startup arm and ID registers.
+- `test_board.py`: runs the demo board script `board/fcapz_ela_board.py` against the RTL. The script is the MicroPython self-test for the real chip, and here every `clock_project_once()` becomes one simulated clock cycle, so the script is checked with the same timing the RP2040 uses on the board.
+
 ## How to view the waveform file
 
 Using GTKWave

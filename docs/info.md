@@ -15,7 +15,36 @@ It samples `ui_in[3:0]` on every clock into a ring buffer. A trigger can fire on
 
 A host reads and writes the analyzer's registers over a SPI-style serial interface on the bidirectional pins. After reset the analyzer arms itself (`STARTUP_ARM=1`), and `ARMED` shows when it is waiting for a trigger. `TRIG_OUT` pulses for one clock when the trigger fires.
 
+![Block diagram](architecture.svg)
+
 ## How to test
+
+### Quick test on the demo board
+
+The repository includes a self-test that runs on the demo board's RP2040 with the Tiny Tapeout MicroPython SDK. It needs no wiring or extra parts: the RP2040 drives the probe inputs, the serial pins and `TRIG_IN`, and clocks the project one edge at a time, so the result does not depend on timing.
+
+1. Copy [`test/board/fcapz_ela_board.py`](https://github.com/lcapossio/tt_ela/blob/main/test/board/fcapz_ela_board.py) to the board's filesystem, for example with Thonny or `mpremote cp fcapz_ela_board.py :`.
+2. In the board's REPL, run:
+
+   ```python
+   import fcapz_ela_board
+   fcapz_ela_board.run()
+   ```
+
+The script selects the project, then runs six tests: register read/write, ID registers, startup arm, value trigger, change trigger and external trigger. It prints `PASS` or `FAIL` for each and ends with `6/6 tests passed` on a working chip. The capture tests also print the captured samples. For example, the value-trigger test captures a 4-bit counter around the value `a`:
+
+```
+  samples: 6 7 8 9 a b c d e f 0 1
+PASS test_capture
+```
+
+To use the analyzer from the REPL directly:
+
+```python
+ela = fcapz_ela_board.setup()
+hex(ela.read(0x0000))   # VERSION, '0x44c41'
+ela.write(0x0004, 0x1)  # arm
+```
 
 ### Serial protocol
 
@@ -63,4 +92,4 @@ Registers are 32 bits on the bus but store only the bits a 4-bit probe needs: a 
 
 ## External hardware
 
-None required. Any microcontroller with GPIO can act as the host, including the RP2040 on the Tiny Tapeout demo board. It needs four pins: `SCLK`, `MOSI` and `CS_N` as outputs, `MISO` as an input.
+None required. The demo board's RP2040 can act as the host (see the quick test above), or any microcontroller with GPIO can. It needs four pins: `SCLK`, `MOSI` and `CS_N` as outputs, `MISO` as an input. To capture signals from outside the chip, connect them to `ui_in[3:0]` through the input PMOD header, and set the SDK to `RPMode.ASIC_MANUAL_INPUTS` so the RP2040 stops driving them.

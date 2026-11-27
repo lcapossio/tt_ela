@@ -1,0 +1,443 @@
+{
+  "title": "fcapz ELA tile (1x1) on the Tiny Tapeout shell",
+  "top": "tt_um_fcapz_ela_tile",
+  "theme": "light",
+  "legend": "compact",
+  "grid": {
+    "cell_w": 220,
+    "cell_h": 84,
+    "gutter_x": 140,
+    "gutter_y": 80
+  },
+  "domains": {
+    "clk": {
+      "freq_mhz": 50,
+      "color": "#90CAF9",
+      "border": "#0D47A1"
+    },
+    "spi_host": {
+      "color": "#FFCC80",
+      "border": "#E65100"
+    }
+  },
+  "groups": {
+    "core": {
+      "label": "fcapz_ela_mini: ELA core"
+    },
+    "shell": {
+      "label": "tt_um_fcapz_ela_tile: SPI register bridge"
+    }
+  },
+  "blocks": [
+    {
+      "id": "pin_probe",
+      "lines": [
+        "ui_in[3:0]",
+        "PROBE0..3"
+      ],
+      "external": true,
+      "side": "left",
+      "row": 0,
+      "col": 0
+    },
+    {
+      "id": "pin_mirror",
+      "lines": [
+        "uo_out[3:0]",
+        "probe mirror (comb.)"
+      ],
+      "external": true,
+      "side": "right",
+      "row": 0,
+      "col": 4
+    },
+    {
+      "id": "pin_trig_in",
+      "lines": [
+        "uio_in[3]",
+        "TRIG_IN"
+      ],
+      "external": true,
+      "side": "left",
+      "row": 1,
+      "col": 0
+    },
+    {
+      "id": "pin_status",
+      "lines": [
+        "uo_out[4] ARMED",
+        "uo_out[7] TRIG_OUT"
+      ],
+      "external": true,
+      "side": "right",
+      "row": 1,
+      "col": 4
+    },
+    {
+      "id": "pin_spi",
+      "lines": [
+        "uio_in[2:0]",
+        "SCLK / MOSI / CS_N"
+      ],
+      "external": true,
+      "side": "left",
+      "row": 3,
+      "col": 0
+    },
+    {
+      "id": "pin_miso",
+      "lines": [
+        "uio_out[4] MISO",
+        "uio_oe = 0x30"
+      ],
+      "external": true,
+      "side": "right",
+      "row": 3,
+      "col": 4
+    },
+    {
+      "id": "pin_busy",
+      "lines": [
+        "uio_out[5]",
+        "BUSY"
+      ],
+      "external": true,
+      "side": "bottom",
+      "row": 4,
+      "col": 2
+    },
+    {
+      "id": "inregs",
+      "lines": [
+        "input regs",
+        "probe_r / probe_prev",
+        "TRIG_IN 2-FF sync"
+      ],
+      "domain": "clk",
+      "group": "core",
+      "row": 1,
+      "col": 1
+    },
+    {
+      "id": "trigcap",
+      "lines": [
+        "trigger + capture FSM",
+        "EQ / CHANGED, ext OR / AND",
+        "armed, pre/post count"
+      ],
+      "domain": "clk",
+      "group": "core",
+      "row": 1,
+      "col": 2
+    },
+    {
+      "id": "ram",
+      "lines": [
+        "sample buffer",
+        "16 x 4b flop ring"
+      ],
+      "domain": "clk",
+      "group": "core",
+      "row": 2,
+      "col": 1
+    },
+    {
+      "id": "regs",
+      "lines": [
+        "config regs + read mux",
+        "0.4 register map subset",
+        "DATA @ 0x100 + 4i"
+      ],
+      "domain": "clk",
+      "group": "core",
+      "row": 2,
+      "col": 2
+    },
+    {
+      "id": "sync",
+      "lines": [
+        "2-FF synchronisers",
+        "SCLK rise detect"
+      ],
+      "domain": "spi_host",
+      "domain_b": "clk",
+      "group": "shell",
+      "row": 3,
+      "col": 1
+    },
+    {
+      "id": "bridge",
+      "lines": [
+        "SPI frame decoder",
+        "1 rw + 16 addr + 32 data",
+        "wr_pulse / rd_pulse"
+      ],
+      "domain": "clk",
+      "group": "shell",
+      "row": 3,
+      "col": 2
+    },
+    {
+      "id": "miso",
+      "lines": [
+        "MISO shift-out",
+        "rd_snap[7:0] + live [31:8]"
+      ],
+      "domain": "clk",
+      "group": "shell",
+      "row": 3,
+      "col": 3
+    }
+  ],
+  "edges": [
+    {
+      "from": "pin_probe",
+      "to": "pin_mirror",
+      "kind": "generic",
+      "width": 4,
+      "route": {
+        "points": [
+          [
+            256,
+            94
+          ],
+          [
+            1476,
+            94
+          ]
+        ]
+      }
+    },
+    {
+      "from": "pin_probe",
+      "to": "inregs",
+      "kind": "generic",
+      "width": 4,
+      "route": {
+        "points": [
+          [
+            256,
+            122
+          ],
+          [
+            326,
+            122
+          ],
+          [
+            326,
+            258
+          ],
+          [
+            396,
+            258
+          ]
+        ]
+      }
+    },
+    {
+      "from": "pin_trig_in",
+      "to": "inregs",
+      "kind": "cdc",
+      "width": 1,
+      "route": {
+        "points": [
+          [
+            256,
+            286
+          ],
+          [
+            396,
+            286
+          ]
+        ]
+      },
+      "label": {
+        "dx": 14,
+        "dy": 4
+      }
+    },
+    {
+      "from": "inregs",
+      "to": "trigcap",
+      "kind": "generic",
+      "width": "probe + prev",
+      "route": {
+        "points": [
+          [
+            616,
+            272
+          ],
+          [
+            756,
+            272
+          ]
+        ]
+      }
+    },
+    {
+      "from": "inregs",
+      "to": "ram",
+      "kind": "generic",
+      "width": 4,
+      "route": {
+        "mode": "direct"
+      }
+    },
+    {
+      "from": "trigcap",
+      "to": "ram",
+      "kind": "generic",
+      "width": "we + wr_ptr",
+      "route": {
+        "points": [
+          [
+            790,
+            314
+          ],
+          [
+            790,
+            354
+          ],
+          [
+            560,
+            354
+          ],
+          [
+            560,
+            394
+          ]
+        ]
+      }
+    },
+    {
+      "from": "trigcap",
+      "to": "pin_status",
+      "kind": "generic",
+      "width": "armed + fire",
+      "route": {
+        "points": [
+          [
+            976,
+            272
+          ],
+          [
+            1476,
+            272
+          ]
+        ]
+      }
+    },
+    {
+      "from": "regs",
+      "to": "trigcap",
+      "kind": "generic",
+      "width": "config + arm"
+    },
+    {
+      "from": "trigcap",
+      "to": "regs",
+      "kind": "generic",
+      "width": "status"
+    },
+    {
+      "from": "ram",
+      "to": "regs",
+      "kind": "generic",
+      "width": 4,
+      "route": {
+        "points": [
+          [
+            616,
+            436
+          ],
+          [
+            756,
+            436
+          ]
+        ]
+      }
+    },
+    {
+      "from": "pin_spi",
+      "to": "sync",
+      "kind": "generic",
+      "width": 3,
+      "route": {
+        "mode": "direct"
+      }
+    },
+    {
+      "from": "sync",
+      "to": "bridge",
+      "kind": "generic",
+      "width": "edge + bits",
+      "route": {
+        "mode": "direct"
+      }
+    },
+    {
+      "from": "bridge",
+      "to": "regs",
+      "kind": "generic",
+      "width": "wr addr data"
+    },
+    {
+      "from": "regs",
+      "to": "miso",
+      "kind": "generic",
+      "width": 32,
+      "route": {
+        "points": [
+          [
+            976,
+            436
+          ],
+          [
+            1226,
+            436
+          ],
+          [
+            1226,
+            558
+          ]
+        ]
+      }
+    },
+    {
+      "from": "bridge",
+      "to": "miso",
+      "kind": "generic",
+      "width": "bitcnt",
+      "route": {
+        "points": [
+          [
+            976,
+            600
+          ],
+          [
+            1116,
+            600
+          ]
+        ]
+      }
+    },
+    {
+      "from": "miso",
+      "to": "pin_miso",
+      "kind": "generic",
+      "width": 1,
+      "route": {
+        "mode": "direct"
+      }
+    },
+    {
+      "from": "bridge",
+      "to": "pin_busy",
+      "kind": "generic",
+      "width": 1,
+      "route": {
+        "mode": "direct"
+      }
+    }
+  ]
+}
