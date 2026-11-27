@@ -17,10 +17,16 @@ The RP2040 drives the project clock one edge at a time
 one value the script puts on ui_in[3:0]. No extra wiring is needed: the
 RP2040 drives the probe inputs, the SPI pins and TRIG_IN itself.
 
-ELA is also usable on its own, for example to capture real signals:
+ELA is also usable on its own from the REPL:
 
     >>> ela = fcapz_ela_board.setup()
     >>> hex(ela.read(0x0000))     # VERSION: 0x54c41
+
+setup() keeps the self-test arrangement: the RP2040 drives ui_in and clocks
+the project by hand, and every serial frame steps the clock (in the SDK,
+clock_project_once() also stops a running clock). To capture external
+signals, leave ui_in undriven, run the project clock, and time the serial
+pins with real delays instead (see "External hardware" in docs/info.md).
 """
 
 PROJECT = "tt_um_fcapz_ela_tile"
